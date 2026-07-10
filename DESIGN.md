@@ -1,26 +1,40 @@
-# Job Queue Server — Reviewed Design (v1 draft, for discussion)
+# Job Queue Server — Design (v2 — decisions folded in)
 
 **Repo:** `gklmdawson/Server` · **Branch:** `claude/job-queue-server-design-0rvfqg`
-**Status:** proposal — nothing here is built yet; this doc is the working spec to iterate on.
+**Status:** direction agreed; remaining opens in §12 are small and don't block Phase 0–1.
 
 This is the ChatGPT build spec ("Data Intake Distributed Processing System") reviewed
-against the actual code in this repo, trimmed where it was over-engineered for a
-3-workstation shop, and hardened where the existing scripts show real failure modes.
-Where this doc and the original spec disagree, this doc wins.
+against the actual code (`data_intake.py`, `classify_3dr.py`, the three automation
+scripts), trimmed where it was over-engineered for a 3-workstation shop, and hardened
+where the code shows real failure modes. Where this doc and the original spec disagree,
+this doc wins.
+
+**Decisions locked in v2** (from discussion 2026-07-10):
+
+* Agent ships as a **PyInstaller EXE** (matches the existing `build.py` workflow).
+* **The intake GUI keeps owning data movement** — copy to storage + RINEX conversion
+  happen at intake, before any job is queued. Agents do not stage data.
+* Production chains: **photo → TERRA_PPK → PIX4D_MATIC** and
+  **LiDAR → TERRA_LIDAR → CYCLONE_CLASSIFY** (Terra eligible once intake's
+  convert-to-RINEX is done, i.e. at submission time).
+* Terra LiDAR completion signal is **known**: `…/<project>_LiDAR/lidars/report/report.md`
+  (already used by `classify_3dr.py`).
+* Cyclone 3DR is **CLI automation, not GUI** (`3DR.exe --Script=… --scriptAutorun --silent`).
+* Coordinator host: **192.168.35.67** (one of the processing machines, dual role).
+* `DJI_PARAMETERS.ini` is standalone-run fallback only — ignored by this system.
 
 ---
 
 ## 1. Goals and non-negotiables
 
-Unchanged from the original spec:
-
-* One dedicated machine per licensed app — Terra on TERRA-01, Pix4Dmatic on PIX4D-01,
-  Cyclone 3DR on CYCLONE-01. Routing **is** license binding.
+* One dedicated machine per licensed app — Terra, Pix4Dmatic, Cyclone 3DR each on
+  their own box. Routing **is** license binding, and it stops one machine from trying
+  to run everything at once.
 * Processing apps run visibly in the logged-in interactive desktop session.
 * Agents make outbound connections only. No inbound ports, WinRM, PsExec, or remote
   execution on workstations. The coordinator never reaches into a workstation.
 * The coordinator is the single source of truth. Agents never touch the database.
-* NAS (UGREEN) holds source data and final outputs; local NVMe is scratch.
+* Shared storage (UGREEN NAS) holds project data; the intake GUI puts it there.
 * Buildable and maintainable by one internal Python developer. No Redis, Celery,
   RabbitMQ, Docker, or Kubernetes.
 
@@ -30,131 +44,156 @@ Unchanged from the original spec:
 
 | File | Role | State |
 |---|---|---|
-| `PyAutomateDJI.py` | Terra LiDAR reconstruction (create project → EPSG → GCP/TLT import → start reconstruction) | Parameterized via CLI args + `DJI_PARAMETERS.ini`; built to EXE |
-| `DJIAutomatePPKV2.py` | Terra PPK (visible-light project → PPK calc → export POS.txt → EXIF/XMP embed) | Parameterized via CLI args; built to EXE; supersedes `DJIAutomatePPK.py` |
-| `AutomatePix4D.py` | Pix4Dmatic (import `<root>/PPK` → CRS → templates → targets → start) | **Params still hardcoded** (`TODO: will be passed in from data_intake.py`) |
+| `data_intake.py` | PyQt5 intake GUI v2.4.4: sensor detect (EXIF), folder structure build, source copy, base-data copy, **convert-to-RINEX** (Trimble CLI), GCP/EPSG entry, then launches the automation EXEs sequentially (`DJISequenceThread`) and finally `Classify3DRThread` | The orchestrator to be replaced by the queue — its *data prep* stays, its *launch/watch* logic moves to the coordinator+agents |
+| `PyAutomateDJI.py` (`DJI_AUTOMATE_UI.exe`) | Terra LiDAR reconstruction via pywinauto | Parameterized via CLI args; script exits after clicking *Start Reconstruction* |
+| `DJIAutomatePPKV2.py` (`DJI_AUTOMATE_PPK.exe`) | Terra PPK: visible-light project → PPK calc → export `POS.txt` → EXIF/XMP embed into `<date>/PPK` | Parameterized via CLI args; runs to completion itself |
+| `AutomatePix4D.py` | Pix4Dmatic: import `<date>/PPK` → CRS → templates → targets → start | **Params still hardcoded** (`TODO: will be passed in from data_intake.py`) — needs argparse |
+| `classify_3dr.py` | Waits for Terra's `report.md`, then runs `ClassifyLAZ.js` on LAZ files via `3DR.exe` CLI; output-file watch + size-stability instead of trusting exit; business-hours retry | Becomes the `cyclone_classify` processor almost verbatim |
 | `embed_ppk_metadata.py` | EXIF/XMP writer used by PPK script | Library, fine as-is |
-| `UIInspect.py` | Dev tool for measuring UIA coordinates | Keep as dev tool |
-| `build.py` | PyInstaller builds + interactive commit/tag/push | Keep for standalone EXE workflow |
+| `UIInspect.py`, `build.py` | Dev tools (coordinate inspector; PyInstaller build + commit menu) | Keep; `build.py` gains agent/coordinator build targets |
+
+**The current end-to-end flow (single machine):**
+
+```text
+GUI: pick folders/client/project/sensor/GCP/EPSG
+ → ProcessingWorker: detect date → build folder tree → copy source data
+   → copy base data → convert to RINEX (Trimble convertToRinex.exe)
+ → _handle_complete: build EXE command list
+   → DJISequenceThread: run DJI_AUTOMATE_PPK.exe, then DJI_AUTOMATE_UI.exe (serially)
+ → Classify3DRThread: wait for lidars/report/report.md → 3DR.exe per LAZ file
+```
+
+The queue server replaces everything after `_handle_complete` with "POST jobs to
+coordinator"; the machines running each stage change, the stages themselves don't.
 
 Findings that shape the design:
 
-1. **The GUI automation contract includes the desktop itself.** Clicks are pixel
+1. **The GUI-automation contract includes the desktop itself.** Clicks are pixel
    offsets from UIA anchors, calibrated at 150% DPI on a specific resolution.
-   A locked screen, RDP resize, or scaling change silently breaks everything.
-   → The agent must *preflight the desktop* (DPI, resolution, session unlocked,
-   foreground available) before accepting a GUI job, and reject with a specific
-   error otherwise.
-2. **Completion detection does not exist yet for Terra LiDAR.** `PyAutomateDJI.py`
-   ends right after clicking *Start Reconstruction* ("Next steps will go here...").
-   Watching the run to completion and validating outputs is **new work**, not a
-   refactor. (The PPK script *does* run to completion — it waits for `POS.txt` and
-   finishes the embed — so it's the easiest first integration.)
+   → The agent must *preflight the desktop* (DPI, resolution, session unlocked)
+   before accepting a **GUI** job (Terra, Pix4D) and reject with a specific error
+   otherwise. Cyclone jobs are CLI (`--silent`) and skip the desktop preflight.
+2. **Terra LiDAR completion detection now has a proven signal**:
+   `<terra_folder>/<project>_LiDAR/lidars/report/report.md` appears when
+   reconstruction finishes; LAZ output lands in `lidars/terra_laz/`. The
+   `terra_lidar` processor watches for it exactly as `classify_3dr.py` does today.
 3. **Error handling currently blocks forever.** `_show_error_dialog()` runs a tkinter
-   `mainloop()`, and the DPI check / missing-args warnings use `MessageBoxW`. With
-   nobody at the desk, a failed job would hang indefinitely.
-   → Add an `--unattended` flag to all three scripts: no dialogs, errors go to
-   stderr + nonzero exit code. (Small, surgical edits; interactive behavior
-   unchanged when run by hand.)
-4. **One job per machine is structural, not a policy.** Two pywinauto automations
-   would fight over foreground focus. `max_parallel_jobs` is always 1 for GUI
-   processors — which deletes most of the scheduling complexity in the spec.
-5. **The intake GUI lives outside this repo.** The scripts are launched *by*
-   `data_intake.py` (Sunrise-Intake) with CLI args. That arg list is already the
-   de-facto job-parameters schema — the coordinator should adopt it as-is.
-6. **There is already a real cross-machine workflow.** Pix4Dmatic imports
-   `<project>/PPK` — the *output* of the Terra PPK job. Once apps live on dedicated
-   machines, that hand-off must go through the NAS, and the PIX4D job must wait on
-   the PPK job. This is the concrete case that justifies job dependencies (and
-   nothing heavier).
+   `mainloop()`, and the DPI check / missing-args warnings use `MessageBoxW`.
+   → Add `--unattended` to all three automation scripts: no dialogs, errors to
+   stderr + nonzero exit. Hand-run behavior unchanged.
+4. **Subprocess output must never inherit an undrained pipe.** `classify_3dr.py`
+   documents a real 3DR.exe deadlock: a child inheriting a pipe nobody reads hangs
+   forever once the ~64KB buffer fills. → The agent runner always redirects child
+   stdout/stderr to a log file.
+5. **One job per machine is structural, not policy.** Two pywinauto automations fight
+   over foreground focus. `max_parallel_jobs` is always 1.
+6. **`AutomatePix4D.py` needs parameterizing** (argparse, same pattern as the Terra
+   scripts) before it can be queued.
+7. **The business-hours logic in `classify_3dr.py` becomes queue semantics.** Today:
+   if classification fails 8am–5pm MST (human likely using 3DR), sleep until 5pm and
+   retry. In the queue: the agent's preflight rejects a Cyclone job while `3DR.exe`
+   is already running (human at the machine), so the job simply stays QUEUED and is
+   retried on a later sync — no clock math. An optional per-node "quiet hours"
+   config window stays available if wanted.
 
 ---
 
 ## 3. Decisions vs. the original spec
 
-What changes, and why:
-
 | Area | Original spec | This design | Why |
 |---|---|---|---|
-| Scheduler | Scoring system (+100 preferred, +30 idle, …) | Routing by capability; FIFO within priority | With one machine per app there is no choice to optimize. A scoring engine tunes a decision that doesn't exist. |
-| Assignment | Background scheduler loop, `ASSIGNING` state | Assign synchronously inside the agent's poll request | No background races, no reconciliation between loop and API, two fewer states. |
-| Node comms | `register` + `heartbeat` + `next-job` endpoints, two agent loops | **One `/sync` endpoint.** First sync = registration (upsert). Every sync = heartbeat + telemetry + job request + cancel delivery. | One loop to keep alive, one endpoint to debug. Cancel arrives for free on the next sync. |
-| Node status | 7-value stored enum (ONLINE…DISABLED) | `enabled` + `draining` booleans (admin intent) — online/busy **derived** from `last_sync_at` and active jobs at read time | Stored status drifts and needs a janitor process. Derived status is always correct. |
-| Job states | 13 states | **7**: `QUEUED, ASSIGNED, RUNNING, SUCCEEDED, FAILED, CANCELLED, NEEDS_ATTENTION` (+ `cancel_requested` flag) | `BLOCKED` is derived (unmet deps), `PAUSED`/`COMPLETING`/`ASSIGNING`/`STARTING` add transitions without adding information. |
-| Workflows | Workflow-definition tables, versions, engine | `depends_on` (list of job ids) on the job row; intake templates (in config) create job chains | Today's flows are linear chains. Dependency gating is a query condition (`all parents SUCCEEDED`), not an engine. DAG-ready if ever needed. |
-| Telemetry | Time-series table + retention policy | Latest snapshot JSON on the node row; job-scoped events in `job_events` | The dashboard needs *now*, not history. Add a table later if wanted — nothing depends on it. |
-| Tray app | PySide6/PyQt tray application | Agent runs as a visible console window; the web dashboard is the monitoring surface | The agent must be interactive anyway; a console shows exactly what the scripts already print. A Qt tray + PyInstaller is a sub-project — revisit after MVP. |
-| Live dashboard | WebSocket / SSE | Plain 5-second fetch polling | Three nodes, LAN. Zero extra moving parts. |
-| Notifications | Notification service | Deferred; dashboard "attention" panel covers MVP; a webhook (email/Teams) is a later 20-line add | |
-| Agent deploy | PyInstaller EXE | Proposal: git checkout + venv + PowerShell bootstrap; update = `git pull` + restart task | Pixel offsets get retuned often — iteration speed on the workstation matters more than a single file. (`build.py` EXE flow stays for the standalone tools.) Open question §12. |
-| Security | Tokens + RBAC + CSRF + HTTPS | Per-node bearer token + bind to LAN interface now. HTTPS/roles when exposure changes | Matches the actual threat model (private LAN, 3 known machines). Token check is ~20 lines; keep it. |
-| Database | SQLite designed for Postgres migration | SQLite in WAL mode, **on the coordinator's local disk — never on the NAS** (SQLite over SMB corrupts). Plain SQLAlchemy models keep Postgres possible | 3 nodes polling at 10s is ~0.3 writes/sec. SQLite will never be the bottleneck here. |
-| Repo layout | 8 top-level packages incl. `services/`, `intake/` | 6 packages, no service layer, intake GUI stays in its own repo and calls the API | Small codebase; indirection costs more than it buys. |
+| Scheduler | Scoring system (+100 preferred, +30 idle, …) | Routing by capability; FIFO within priority | One machine per app — there is no choice to optimize. |
+| Assignment | Background scheduler loop, `ASSIGNING` state | Assign synchronously inside the agent's poll request | No background races, no reconciliation, two fewer states. |
+| Node comms | `register` + `heartbeat` + `next-job` endpoints | **One `/sync` endpoint.** First sync = registration (upsert). Every sync = heartbeat + telemetry + job request + cancel delivery. | One loop to keep alive, one endpoint to debug. |
+| Node status | 7-value stored enum | `enabled` + `draining` booleans; online/busy **derived** from `last_sync_at` at read time | Stored status drifts and needs a janitor. Derived status is always correct. |
+| Job states | 13 states | **7**: `QUEUED, ASSIGNED, RUNNING, SUCCEEDED, FAILED, CANCELLED, NEEDS_ATTENTION` (+ `cancel_requested` flag) | `BLOCKED` is derived (unmet deps); `PAUSED/COMPLETING/ASSIGNING/STARTING` add transitions without information. |
+| Workflows | Workflow-definition tables, versions, engine | `depends_on` (list of job ids) on the job row; chain templates in coordinator config | Both production flows are 2-step linear chains. Dependency gating is a query condition, not an engine. |
+| Data staging | Agent-managed scratch, NAS↔local copies | **Intake GUI copies data before submitting**; jobs carry UNC paths; agents work in place | Decided. Keeps agents dumb. `scratch_path` stays in the job model as an escape hatch if in-place NAS processing proves slow (§12.3). |
+| Telemetry | Time-series table + retention | Latest snapshot JSON on the node row; job events in `job_events` | Dashboard needs *now*, not history. |
+| Tray app | PySide6/PyQt tray application | Agent is a visible console window; the web dashboard is the monitoring surface | The agent must be interactive anyway; console output matches how the scripts already communicate. |
+| Live dashboard | WebSocket / SSE | 5-second fetch polling | Three nodes, LAN. |
+| Notifications | Notification service | Deferred; dashboard "attention" panel; webhook later | |
+| Agent deploy | PyInstaller EXE | **PyInstaller EXE — decided.** `build.py` gains `agent` (and `coordinator`) targets; EXEs distributed from the NAS dist folder like today; `update_agent.ps1` copies new EXE + restarts the task | Matches the shop's existing workflow. |
+| Security | Tokens + RBAC + CSRF + HTTPS | Per-node bearer token + LAN bind now; HTTPS/roles later if exposure changes | Matches actual threat model. |
+| Database | SQLite designed for Postgres migration | SQLite WAL on the coordinator's **local disk — never a network share** (SQLite over SMB corrupts). Plain SQLAlchemy keeps Postgres possible | 3 nodes at 10s polls ≈ 0.3 writes/sec. |
+| Repo layout | 8 top-level packages incl. `services/` | 6 packages, no service layer; intake GUI is cut over in place | Small codebase; indirection costs more than it buys. |
 
-Kept from the spec unchanged (it got these right): coordinator authority; poll-only
-agents; Task Scheduler at-logon deployment (not a service — Session 0 can't touch the
-desktop); UNC paths over mapped drives; scratch retention windows + `.keep` marker;
-**output validation gates completion, never the exit code alone**; structured logs;
-failure artifacts including screenshots; phased build starting with a mock processor.
+Kept from the spec unchanged: coordinator authority; poll-only agents; Task Scheduler
+at-logon deployment (not a service — Session 0 can't touch the desktop); UNC paths
+over mapped drives; **output validation gates completion, never exit code alone**;
+structured logs; failure artifacts including screenshots; mock processor first.
 
 ---
 
 ## 4. Architecture
 
 ```text
-            ┌────────────────────────────────────────────┐
-            │  COORDINATOR (Windows NUC, always on)      │
-            │  FastAPI + Uvicorn (single worker)         │
-            │  SQLite (WAL, local disk)                  │
-            │  Dashboard (Jinja2 + fetch polling)        │
-            │  Assignment logic (runs inside /sync)      │
-            └───────────────────▲────────────────────────┘
-                                │ HTTP :8443 (LAN only, outbound from agents)
-        ┌───────────────────────┼───────────────────────┐
-        │                       │                       │
-  TERRA-01 agent          PIX4D-01 agent          CYCLONE-01 agent
-  (console app in         (console app in         (console app in
-   logged-in session)      logged-in session)      logged-in session)
-   DJI Terra + scripts     Pix4Dmatic + script     Cyclone 3DR (phase 6)
-   D:\Scratch              D:\Scratch              D:\Scratch
-        │                       │                       │
-        └───────────────────────┼───────────────────────┘
-                                ▼
-                    \\UGREEN  (NVMe NAS, 10 GbE)
-                    Incoming / Active / Deliverables / ArchiveQueue
+                       ┌─────────────────────────────────────────┐
+   INTAKE MACHINE      │  COORDINATOR — 192.168.35.67            │
+   data_intake.py      │  (co-hosted on a processing machine)    │
+   copies data +       │  FastAPI + Uvicorn (single worker)      │
+   converts RINEX,  ──▶│  SQLite (WAL, local disk)               │
+   then POSTs          │  Dashboard (Jinja2 + 5s fetch polling)  │
+   project + jobs      │  Assignment runs inside /sync           │
+                       └───────────────▲─────────────────────────┘
+                                       │ HTTP :8443 (LAN only; agents connect out)
+                ┌──────────────────────┼──────────────────────┐
+                │                      │                      │
+          TERRA node             PIX4D node             CYCLONE node
+          agent EXE in           agent EXE in           agent EXE in
+          logged-in session      logged-in session      logged-in session
+          DJI Terra +            Pix4Dmatic +           Cyclone 3DR
+          DJI_AUTOMATE_*.exe     AutomatePix4D          (CLI, --silent)
+                │                      │                      │
+                └──────────────────────┼──────────────────────┘
+                                       ▼
+                          Shared storage (UGREEN NAS)
+                 <root>\<client>\<project>\<date>\{Sensor, BaseData,
+                                    PPK, Terra, Pix4D, …}
 ```
 
-Proposed repo layout (this repo):
+The coordinator machine also runs its own agent — coordinator and agent are separate
+processes and don't special-case each other. If that box reboots, agents elsewhere
+just back off and reconnect (§7); nothing is lost because all state is in SQLite.
+
+Repo layout (this repo):
 
 ```text
 Server/
 ├── coordinator/
 │   ├── main.py            # FastAPI app + startup
-│   ├── api.py             # all routes (split only when it hurts)
+│   ├── api.py             # all routes
 │   ├── db.py              # SQLAlchemy models + session
 │   ├── assign.py          # eligibility + pick-next-job (called from /sync)
+│   ├── templates.py       # chain templates (photo_ppk, lidar) → job rows
 │   ├── config.py
-│   └── dashboard/         # templates/ + static/
+│   └── dashboard/
 ├── agent/
 │   ├── main.py            # sync loop → run job → report
-│   ├── preflight.py       # desktop/NAS/scratch/app checks
-│   ├── runner.py          # subprocess launch, watchdog, state file, failure bundle
-│   ├── scratch.py         # staging + retention cleanup
+│   ├── preflight.py       # desktop / NAS / app checks (per job type)
+│   ├── runner.py          # subprocess launch (output → log file), watchdog,
+│   │                      # local state file, failure bundle
 │   └── config.py
 ├── processors/
 │   ├── base.py            # interface + SubprocessProcessor
 │   ├── terra_ppk.py
 │   ├── terra_lidar.py
-│   └── pix4dmatic.py
-├── automation/            # existing scripts move here UNCHANGED (+ --unattended flag)
+│   ├── pix4dmatic.py
+│   └── cyclone_classify.py
+├── automation/            # existing payloads, moved UNCHANGED (+ --unattended)
 │   ├── PyAutomateDJI.py
 │   ├── DJIAutomatePPKV2.py
 │   ├── AutomatePix4D.py
 │   └── embed_ppk_metadata.py
+├── intake/
+│   └── queue_client.py    # small client data_intake.py calls to submit jobs
+├── data_intake.py         # GUI (cutover in Phase 6: DJISequenceThread → queue_client)
+├── classify_3dr.py        # source for cyclone_classify port; retired at cutover
 ├── shared/
 │   └── schemas.py         # pydantic models + enums shared by both sides
-├── scripts/               # install_agent.ps1, install_coordinator.ps1, update.ps1
+├── scripts/               # install_coordinator.ps1, install_agent.ps1, update_agent.ps1
 ├── tests/
+├── build.py               # + agent / coordinator PyInstaller targets
 └── pyproject.toml
 ```
 
@@ -162,31 +201,28 @@ Server/
 
 ## 5. Data model (4 tables)
 
-**projects** — `id, uuid, client, project_number, name, sensor_type, source_path,
-active_path, output_path, priority, status, metadata_json, created_at, updated_at`.
-Status stays coarse: `ACTIVE, QA, ARCHIVED, CANCELLED` — per-stage detail lives on jobs;
-"anything failed?" is derived from its jobs.
+**projects** — `id, uuid, client, project_number, name, sensor_type, date_folder,
+root_path, priority, status, metadata_json, created_at, updated_at`.
+Status stays coarse (`ACTIVE, QA, ARCHIVED, CANCELLED`); "anything failed?" derives
+from jobs.
 
 **jobs** — `id, uuid, project_id, job_type, status, priority, depends_on_json,
-parameters_json, assigned_node, scratch_path, cancel_requested, retry_count,
-max_retries (default 0), max_runtime_minutes, created_at, assigned_at, started_at,
-last_progress_at, finished_at, exit_code, error_message, progress_percent,
-progress_message, processor_version, agent_version`.
+parameters_json, assigned_node, scratch_path (unused for now, see §12.3),
+cancel_requested, retry_count, max_retries (default 0), max_runtime_minutes,
+created_at, assigned_at, started_at, last_progress_at, finished_at, exit_code,
+error_message, progress_percent, progress_message, processor_version, agent_version`.
 
-* `parameters_json` is **opaque to the coordinator** — only the processor on the agent
-  interprets it. This is the key future-proofing rule: adding Cyclone/Global Mapper/TBC
-  never touches coordinator code, only a new processor module + a capability string.
-* Parameters for the existing scripts are exactly their current CLI args
-  (`project_name, terra_path, data_source, epsg_h, epsg_v, gcp_path, ppk_path,
-  no_targets, …`).
+* `parameters_json` is **opaque to the coordinator** — only the processor interprets
+  it. Adding Cyclone/Global Mapper/TBC never touches coordinator code: new processor
+  module + capability string in one agent's config.
+* Parameters are exactly what `data_intake._handle_complete()` builds today (§8).
 
 **nodes** — `id, node_name (unique), token_hash, capabilities_json, enabled, draining,
 agent_version, computer_name, current_user, last_sync_at, last_telemetry_json,
 created_at, updated_at`. Online = `last_sync_at` within 90s, computed at read time.
 
-**job_events** — `id, job_id, ts, type, message, details_json`. Append-only audit trail
-(assigned, started, progress, validation, failure artifacts path, retries, scheduler
-decisions).
+**job_events** — `id, job_id, ts, type, message, details_json`. Append-only audit
+trail (assigned, started, progress, validation, failure-artifact path, retries).
 
 **Job state machine**
 
@@ -201,17 +237,17 @@ NEEDS_ATTENTION/FAILED → QUEUED              (manual retry from dashboard)
 
 Rules:
 
-* **All timestamps are stamped by the coordinator.** Workstation clocks are not trusted.
-* **Lease reclaim:** `ASSIGNED` with no `started` report within 5 min → back to `QUEUED`
-  (3 strikes → `NEEDS_ATTENTION`).
+* **All timestamps stamped by the coordinator.** Workstation clocks are not trusted.
+* **Lease reclaim:** `ASSIGNED` with no `started` report within 5 min → back to
+  `QUEUED` (3 strikes → `NEEDS_ATTENTION`).
 * **A vanished node never auto-fails a job** — the app may still be running. Job goes
-  `NEEDS_ATTENTION`; when the agent reconnects it reconciles from its local state file.
-* **Retries default to 0 for GUI jobs.** Blind re-runs of GUI automation can create
-  half-built duplicate projects. Retry is a human button on the dashboard (which is
-  cheap because job creation is idempotent and scratch is per-job).
-* Eligibility for assignment = `status=QUEUED` ∧ all `depends_on` jobs `SUCCEEDED`
-  ∧ `job_type ∈ node.capabilities` ∧ node enabled ∧ not draining ∧ node has no active
-  job. Order by `priority desc, created_at asc`. Assignment is one atomic
+  `NEEDS_ATTENTION`; the reconnecting agent reconciles from its local state file.
+* **Retries default to 0 for GUI jobs** (blind reruns create half-built duplicate
+  projects). Retry is a human button on the dashboard. Cyclone (CLI, idempotent per
+  file) may set `max_retries=1`.
+* Eligibility = `status=QUEUED` ∧ all `depends_on` `SUCCEEDED` ∧ `job_type ∈
+  node.capabilities` ∧ node enabled ∧ not draining ∧ no active job on node.
+  Order by `priority desc, created_at asc`. Assignment is one atomic
   `UPDATE … WHERE status='QUEUED'`.
 
 ---
@@ -221,8 +257,8 @@ Rules:
 Agent-facing (bearer token per node):
 
 ```text
-POST /nodes/{node_name}/sync        # THE endpoint: registration, heartbeat,
-                                    # telemetry, job request, cancel delivery
+POST /nodes/{node_name}/sync        # registration + heartbeat + telemetry +
+                                    # job request + cancel delivery, all in one
 POST /jobs/{id}/started             # idempotent
 POST /jobs/{id}/progress            # percent/stage/message → job + event log
 POST /jobs/{id}/succeeded           # includes validation summary; idempotent
@@ -247,47 +283,50 @@ GET  /health
 
 Dashboard: server-rendered pages + a JSON status endpoint polled every 5s.
 Panels: nodes (online/job/progress/telemetry), queue, active jobs, **attention**
-(failed, needs-attention, stalled = no progress in N min, offline nodes, low scratch).
+(failed, needs-attention, stalled = no progress in N min, offline nodes).
 
 ---
 
 ## 7. Agent
 
-Startup: load config → logging → read local state file → reconcile any interrupted job
-(process still alive? watch it. dead? report outcome from evidence) → sync loop.
+Startup: load config → logging → read local state file → reconcile any interrupted
+job (process still alive? resume watching. dead? report outcome from evidence) →
+sync loop.
 
-**Preflight before accepting any GUI job** (reject with specific error code):
+**Preflight before accepting a job** (reject with a specific error code; job stays
+queued or goes to attention depending on the error):
 
-1. Desktop: session unlocked, expected resolution, DPI 150%, foreground obtainable.
-2. NAS source path reachable; output path writable.
-3. Scratch root: exists, writable, ≥ configured free space.
-4. Required app installed (exe exists) and **not already running** (a leftover Terra
-   instance would receive our clicks in the wrong state).
-5. No other active job.
+1. *GUI job types only* (Terra, Pix4D): session unlocked, expected resolution,
+   DPI 150%, foreground obtainable.
+2. Required app installed, and **not already running** — a leftover Terra instance
+   would receive clicks in the wrong state; a human using 3DR means the Cyclone job
+   politely stays queued.
+3. Job's UNC paths reachable/writable.
+4. No other active job.
 
-**Execution:** stage inputs (robocopy NAS → scratch when the job asks for it) → write
-local state file (atomic: temp + `os.replace`) → launch script via `subprocess.Popen`
-with `--unattended --log-file …` → watchdog loop (process alive, progress sources,
-`max_runtime_minutes` kill via `taskkill /T`, cancel check each sync) → on exit:
-processor validates outputs → robocopy results scratch → NAS (write to `_partial`
-suffix, rename when complete) → report succeeded/failed with evidence.
+**Execution:** write local state file (atomic: temp + `os.replace`) → launch
+payload via `subprocess.Popen` with `--unattended --log-file …`, stdout/stderr
+redirected to a per-job log file (never an inherited pipe — the 3DR deadlock
+lesson) → watchdog loop (process alive, progress sources, `max_runtime_minutes`
+kill via `taskkill /T`, cancel check each sync) → processor-specific completion
+watch (§8) → processor validates outputs → report succeeded/failed with evidence.
 
-**On failure:** capture screenshot + agent log tail + script log + job params into
-`scratch/<job>/_failure/`, referenced in the failure report. This is the single
-highest-value debugging feature for GUI automation — keep it from day one.
+**On failure:** capture screenshot + agent log tail + payload log + job params into
+a per-job `_failure/` folder (local work dir), path referenced in the failure
+report. Highest-value debugging feature for GUI automation — in from day one.
 
-**Scratch retention** (from spec, unchanged): success 24h, failed 7d, cancelled 3d,
-`.keep` marker protects. Cleanup runs hourly, only after coordinator has acknowledged
-the terminal report.
+**Local work dir** (`C:\ProgramData\DataIntakeAgent\`): agent config, logs, job
+state file, failure bundles. Failure bundles retained 7 days. (No data staging —
+project data lives on the NAS and is the GUI's responsibility.)
 
 **Recovery matrix:**
 
 | Event | Behavior |
 |---|---|
-| Coordinator down | Agent keeps running/watching current job, buffers progress, exponential backoff (poll caps at 60s), reports when back |
+| Coordinator down | Keep running/watching current job, buffer progress, exponential backoff (poll caps at 60s), report when back |
 | Agent crash / reboot mid-job | State file names the job + PID; on restart: PID alive → resume watching; dead → validate what's on disk, report success or failure with evidence |
-| NAS blip | Retry stage/copy with backoff; only fail after N attempts; never delete scratch on copy failure |
-| Windows Update reboot | Same as reboot; Task Scheduler relaunches agent at logon (auto-logon on processing account, per spec §13) |
+| NAS blip | Retry with backoff; only fail after N attempts |
+| Windows Update reboot | Same as reboot; Task Scheduler relaunches agent at logon (auto-logon processing account) |
 
 ---
 
@@ -295,122 +334,159 @@ the terminal report.
 
 ```python
 class Processor:
-    job_types: set[str]                     # e.g. {"TERRA_PPK"}
-    def preflight(self, job) -> list[str]           # job-specific checks (beyond agent's)
-    def build_command(self, job) -> list[str]       # argv for the existing script/EXE
+    job_types: set[str]
+    def preflight(self, job) -> list[str]           # job-specific checks
+    def build_command(self, job) -> list[str]       # argv for the payload
     def watch(self, proc, job, report) -> None      # progress + completion detection
     def validate_outputs(self, job) -> Validation   # files exist/size/mtime/count
 ```
 
-`SubprocessProcessor` is the default base — all three apps are driven by launching the
-existing scripts with args. **The automation scripts are not refactored into importable
-modules for MVP** — they move into `automation/` unchanged (plus `--unattended`).
-Refactor later only if a reason appears.
+`SubprocessProcessor` is the shared base. **The automation scripts are not refactored
+into importable modules** — they move to `automation/` unchanged (plus
+`--unattended`) and keep shipping as the same EXEs.
 
-| Processor | Completion signal | Validation | Notes |
+| Processor | Payload | Completion signal | Validation |
 |---|---|---|---|
-| `terra_ppk` | Script already runs to completion (waits for POS.txt, embeds EXIF) → exit code | `POS.txt` exists; embedded image count > 0 in `<root>/PPK` | **Integrate first** — cleanest story |
-| `terra_lidar` | New watcher: script exits after starting reconstruction → watch Terra process + output dir for `.las`/export products + quiescence | `.las` present, > min size, mtime > job start | Needs a calibration session on TERRA-01 to identify the reliable "done" signal |
-| `pix4dmatic` | Watch project dir (report/outputs) after Start | Expected exports exist, > min size | Prereq: parameterize `AutomatePix4D.py` (replace hardcoded constants with argparse, same pattern as Terra scripts) |
+| `terra_ppk` | `DJI_AUTOMATE_PPK.exe` | Script runs to completion itself (waits for `POS.txt`, embeds EXIF) → exit code | `POS.txt` exists; embedded image count > 0 under `<date>/PPK` |
+| `terra_lidar` | `DJI_AUTOMATE_UI.exe` | EXE exits after *Start Reconstruction*; agent then watches for `<terra>/<project>_LiDAR/lidars/report/report.md` (poll ~60s, per `classify_3dr.py`) | `report.md` present; `.las/.laz` in `lidars/terra_laz/`, > min size, mtime > job start |
+| `pix4dmatic` | `AutomatePix4D.py` (parameterized in Phase 0) | Watch Pix4D project dir for final outputs/report after Start | Expected exports exist, > min size (exact list: §12.4) |
+| `cyclone_classify` | `3DR.exe --Script=ClassifyLAZ.js --scriptAutorun --silent --scriptParam=…` per LAZ file | Output `.3dr` file appears + size stable ~20s (port of `classify_3dr._classify_one`, incl. 6h per-file timeout and the ≥8GB merged-vs-tiles rule) | One `.3dr` per input LAZ |
 
-Capability strings = job types (`TERRA_PPK`, `TERRA_LIDAR`, `PIX4D_MATIC`,
-`CYCLONE_REGISTER`, …), declared in each agent's config. Adding a processor = new
-module + capability string in one agent's config. Coordinator code untouched.
+**Job parameters** (exactly what `data_intake._handle_complete()` builds today):
+
+```text
+TERRA_PPK:        project_name, project_location=<date>/PPK, data_source=<flight dir>,
+                  terra_path=<date>/Terra, ppk_path=<date>/PPK, epsg_h, epsg_v
+TERRA_LIDAR:      project_name, project_location=<date>/Terra, data_source=<sensor dir>,
+                  gcp_path, epsg_h, epsg_v, no_targets
+PIX4D_MATIC:      project_name, project_root=<date>, epsg_h, epsg_v, tat_path
+CYCLONE_CLASSIFY: terra_folder=<date>/Terra, project_name=<name>_LiDAR, model_name
+```
+
+**Chain templates** (coordinator config; intake picks one per submission):
+
+```yaml
+templates:
+  photo_ppk:           # M3E / P1 — after intake copy + RINEX convert
+    - job_type: TERRA_PPK
+    - job_type: PIX4D_MATIC
+      depends_on: [TERRA_PPK]
+  lidar:               # L2 / L3 — after intake copy + RINEX convert
+    - job_type: TERRA_LIDAR
+    - job_type: CYCLONE_CLASSIFY
+      depends_on: [TERRA_LIDAR]
+```
+
+A project may carry both chains (both toggles checked today). The per-node
+single-job rule serializes whatever lands on the same machine; `depends_on` orders
+the rest. Capability strings = job types, declared in each agent's config.
 
 ---
 
 ## 9. Resilience rules (operational safeguards)
 
-Spec's list, trimmed and extended with what the code review surfaced:
-
 * One active job per workstation, structurally.
-* No arbitrary commands via API — `parameters_json` feeds an allowlisted argv builder
-  in the processor; paths are validated against configured roots.
-* Job completion requires output validation, never exit code alone.
-* No scratch deletion before validation + coordinator ack + retention window.
+* No arbitrary commands via API — `parameters_json` feeds an allowlisted argv
+  builder in the processor; paths validated against configured roots.
+* Completion requires output validation, never exit code alone (Terra LiDAR's EXE
+  exiting is the *start* of the wait, not the end).
+* Child processes never inherit pipes; output goes to per-job log files.
 * No duplicate assignment (atomic conditional UPDATE; single uvicorn worker).
 * No auto-fail on missing heartbeat; `NEEDS_ATTENTION` + reconcile instead.
-* Agent report endpoints are idempotent (safe to retry over a flaky network).
-* All scripts run `--unattended` under the agent — no dialog can ever block a job.
-* Desktop preflight before GUI jobs (DPI/resolution/lock state).
-* SQLite lives on the coordinator's local disk; nightly file backup to the NAS.
+* Agent report endpoints idempotent (safe to retry over a flaky network).
+* All payloads run `--unattended` under the agent — no dialog can block a job.
+* Desktop preflight before GUI jobs (DPI / resolution / lock state).
+* "App already running" preflight keeps jobs queued instead of failing them
+  (covers the human-using-3DR case without clock rules).
+* SQLite on the coordinator's local disk; nightly file backup to the NAS.
 * Retries default 0 for GUI processors; retry is a human action.
-* NAS writes land in `_partial` then atomic rename; robocopy for bulk copies.
 * Server-side timestamps everywhere.
 
 ---
 
 ## 10. Security & deployment
 
-* Per-node bearer token (random, hashed in DB), delivered once at install into the
-  agent machine's env/DPAPI store. Admin/dashboard behind the LAN + a simple shared
-  admin token initially; HTTPS via reverse proxy when/if exposure grows.
-* Coordinator: NUC, `uvicorn` single worker under Task Scheduler at-boot (or NSSM),
-  one inbound firewall rule TCP 8443 restricted to the LAN subnet.
-* Agents: Task Scheduler at-logon of the processing account (`ProcessingSvc`-style,
-  auto-logon), *run only when logged on*, restart on failure, 30s delay — per spec §24.
-* Agent install/update: `scripts/install_agent.ps1` (venv, config, task registration),
-  `scripts/update.ps1` (`git pull` + `pip sync` + restart task). No PyInstaller needed
-  for the agent (open question §12).
+* Per-node bearer token (random, hashed in DB), installed once per machine.
+  Dashboard on the LAN, simple shared admin token initially; HTTPS via reverse
+  proxy later if exposure grows.
+* **Coordinator** on 192.168.35.67: `coordinator.exe` (PyInstaller) under Task
+  Scheduler at-boot (or NSSM), single worker, one inbound firewall rule TCP 8443
+  scoped to the LAN subnet. SQLite + logs under `C:\ProgramData\DataIntakeCoordinator\`.
+* **Agents**: `agent.exe` (PyInstaller) via Task Scheduler at-logon of the
+  processing account (auto-logon), *run only when logged on*, restart on failure,
+  30s delay. Config YAML next to the EXE.
+* **Build & update**: `build.py agent` / `build.py coordinator` produce EXEs into
+  `dist/`, copied to the NAS dist share (same pattern as `DJI_AUTOMATE_UI.exe`
+  today). `scripts/update_agent.ps1` on each box: stop task → copy new EXE from
+  the share → start task. The dashboard shows each node's `agent_version`, so
+  stale agents are visible at a glance.
 
 ---
 
 ## 11. Phased plan
 
-Each phase ends demonstrable; nothing depends on a later phase.
+Migration safety: `data_intake.py` keeps working exactly as it does today until
+Phase 6 — the queue is built and proven alongside it, then the GUI's launch step is
+swapped. No disruption window.
 
-**Phase 0 — Repo restructure + script hardening (small)**
-Move scripts to `automation/` unchanged; add `--unattended` to all three; add argparse
-to `AutomatePix4D.py`; `pyproject.toml` with pinned deps.
-✓ Scripts still run by hand exactly as before.
+**Phase 0 — Repo restructure + payload hardening (small)**
+Move automation scripts to `automation/` unchanged; add `--unattended` to all three;
+add argparse to `AutomatePix4D.py`; `pyproject.toml`; `build.py` targets for
+agent/coordinator.
+✓ Scripts still run by hand and from today's GUI exactly as before.
 
 **Phase 1 — Coordinator core**
-DB models, `/sync` with assignment, job report endpoints, project/job creation,
-minimal dashboard, node tokens. Fake-agent script for testing.
-✓ Fake agent registers, gets a job, reports it done; dashboard shows it.
+DB models, `/sync` with assignment, job report endpoints, project/job creation with
+chain templates, minimal dashboard, node tokens. Fake-agent script for testing.
+✓ Fake agent registers, receives a chained job set in order, reports; dashboard
+shows it all.
 
 **Phase 2 — Real agent + mock processor**
-Sync loop, preflight, runner + watchdog + state file, scratch manager, failure bundle,
-recovery-from-state-file. Mock processor (sleeps, writes a file).
-✓ Kill the agent mid-job and reboot the box: job recovers or lands NEEDS_ATTENTION
-with evidence — never duplicated, never silently lost.
+Sync loop, preflight, runner + watchdog + state file, failure bundle, recovery.
+PyInstaller `agent.exe` built and installed via script on one box.
+✓ Kill the agent mid-job and reboot the box: the job recovers or lands
+NEEDS_ATTENTION with evidence — never duplicated, never silently lost.
 
-**Phase 3 — Terra on TERRA-01**
-`terra_ppk` first, then `terra_lidar` (includes the completion-watcher discovery
-session on the real machine).
-✓ PPK job submitted at the coordinator runs visibly on TERRA-01, outputs land on NAS,
-validated, job completes without a human touching the box.
+**Phase 3 — Terra node live**
+`terra_ppk` first (script already runs to completion), then `terra_lidar` with the
+`report.md` watcher.
+✓ A PPK job submitted at the coordinator runs visibly on the Terra machine,
+outputs validated on the NAS, job completes hands-off.
 
-**Phase 4 — Pix4D on PIX4D-01 + the real chain**
-`pix4dmatic` processor; intake template creating `TERRA_PPK → PIX4D_MATIC` with
-`depends_on`; NAS hand-off of the PPK folder.
+**Phase 4 — Pix4D node + photo chain**
+`pix4dmatic` processor on the parameterized script; `photo_ppk` template end-to-end
+(PPK on Terra box → Pix4Dmatic on Pix4D box via the NAS PPK folder). Resolve the
+`SINGLE_TLT.csv` source for photo-only runs (§12.2).
 ✓ One submission drives both machines in sequence.
 
-**Phase 5 — Intake integration + ops polish**
-Data Intake GUI posts projects/jobs to the coordinator (small client in the intake
-repo) instead of launching EXEs; dashboard retry/cancel/drain controls; install
-scripts; DB backup task.
-✓ Office staff never RDP into processing machines for normal work.
+**Phase 5 — Cyclone node + LiDAR chain**
+`cyclone_classify` processor (port `Classify3DRThread`); `lidar` template
+end-to-end (Terra LiDAR → classification on the Cyclone box).
+✓ report.md-gated classification runs on its own machine; human-in-use preflight
+keeps jobs queued instead of failing.
 
-**Phase 6 — Cyclone 3DR + extras**
-`cyclone` processor (there is an existing `gklmdawson/Cyclone3DR` repo to review),
-priorities UI, webhook notifications, telemetry history if still wanted.
+**Phase 6 — Intake cutover + ops polish**
+`intake/queue_client.py`; `data_intake.py` swaps `DJISequenceThread` +
+`Classify3DRThread` for a single "submit to queue" call (keeps copy + RINEX);
+dashboard retry/cancel/drain controls; nightly DB backup; docs.
+✓ Office staff submit from the intake GUI and watch the dashboard; nobody RDPs
+into processing machines for normal work.
 
 ---
 
-## 12. Open questions (blocking Phase 1 start)
+## 12. Remaining open items (none block Phases 0–2)
 
-1. **Where does the intake GUI live and how do we integrate?** `Sunrise-Intake`
-   (0riginalUsername) appears to be it; there is also an older `gklmdawson/DataIntake`
-   repo. Preferred: the GUI keeps its screens and swaps "launch EXE" for "POST to
-   coordinator". Needs that repo added to a session to wire up.
-2. **Agent deployment:** git+venv (fast iteration, proposed) vs PyInstaller EXE
-   (no Python install on workstations, but slow to iterate)?
-3. **Which chains at MVP?** Photo→PPK→Pix4D confirmed? LiDAR→Terra standalone?
-   Where does Cyclone 3DR sit in the pipeline (registration after Terra)?
-4. **Data staging ownership:** today `DJI_PARAMETERS.ini` points at local `C:\3Ddata`
-   paths — someone copies from the NAS first. Should the agent own NAS→scratch staging
-   (proposed), or does intake pre-stage to the target machine?
-5. **Coordinator host:** confirm the Windows NUC (always-on) and its name/IP.
-6. **Cyclone 3DR automation:** does `gklmdawson/Cyclone3DR` already automate it
-   (3DR script engine?), or is that greenfield?
+1. **Which machine is 192.168.35.67** (Terra / Pix4D / Cyclone box?) — record its
+   name; confirm it's always-on and has a local disk location for the DB. Needed by
+   Phase 1 install.
+2. **`SINGLE_TLT.csv` for photo-only runs**: today the Terra *LiDAR* script extracts
+   TLT rows from the GCP CSV. When only the photo chain runs, should the
+   `pix4dmatic` processor (or intake) do that extraction from `gcp_path`? Needed by
+   Phase 4.
+3. **In-place NAS processing performance**: Terra/Pix4D project folders will live on
+   the UGREEN share (GUI copies there; agents work in place — decided). If a real
+   job shows SMB slowness/instability, the fallback is agent-side scratch staging;
+   the job model keeps `scratch_path` so this can be added per job type without
+   schema changes. Watch during Phases 3–4.
+4. **Pix4D expected outputs**: exact export set to validate (LAS? orthomosaic?
+   report?) — list what a good Pix4Dmatic run leaves behind. Needed by Phase 4.
