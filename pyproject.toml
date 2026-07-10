@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-intake-server"
+version = "0.1.0"
+description = "Distributed job queue for geospatial processing workstations (DJI Terra, Pix4Dmatic, Cyclone 3DR)"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.5,<3",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# The coordinator process (runs on the Pix4D machine).
+coordinator = [
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.27",
+    "SQLAlchemy>=2.0,<3",
+    "jinja2>=3.1",
+]
+# The workstation agent (Phase 2).
+agent = [
+    "httpx>=0.26",
+    "psutil>=5.9",
+]
+# The GUI-automation payload scripts (Windows workstations only).
+automation = [
+    "pywinauto>=0.6.8",
+    "piexif>=1.1.3",
+]
+# The data intake GUI.
+gui = [
+    "PyQt5>=5.15",
+    "Pillow>=10",
+]
+dev = [
+    "pytest>=8",
+    "httpx>=0.26",
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.27",
+    "SQLAlchemy>=2.0,<3",
+    "jinja2>=3.1",
+    "pyinstaller>=6",
+]
+
+[project.scripts]
+data-intake-coordinator = "coordinator.main:run"
+
+[tool.setuptools.packages.find]
+include = ["coordinator*", "shared*", "agent*", "processors*", "intake*"]
+
+[tool.setuptools.package-data]
+coordinator = ["dashboard/templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

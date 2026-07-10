@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Build script for DJI automation EXEs.
+Build script for DJI automation, agent, and coordinator EXEs.
 
 Usage:
-  py build.py terra          — build DJI_AUTOMATE_UI.exe  (PyAutomateDJI.py)
-  py build.py ppk            — build DJI_AUTOMATE_PPK.exe (DJIAutomatePPKV2.py)
-  py build.py all            — build both EXE targets in order
+  py build.py terra          — build DJI_AUTOMATE_UI.exe  (automation/PyAutomateDJI.py)
+  py build.py ppk            — build DJI_AUTOMATE_PPK.exe (automation/DJIAutomatePPKV2.py)
+  py build.py pix4d          — build PIX4D_AUTOMATE.exe   (automation/AutomatePix4D.py)
+  py build.py agent          — build DataIntakeAgent.exe  (agent/main.py, Phase 2)
+  py build.py coordinator    — build DataIntakeCoordinator.exe (coordinator/main.py)
+  py build.py all            — build the payload EXEs (terra, ppk, pix4d)
   py build.py commit pix4d   — commit AutomatePix4D.py    (prompts for a tag, then Y/n before pushing)
   py build.py commit terra   — commit PyAutomateDJI.py    (prompts for a tag, then Y/n before pushing)
   py build.py commit ppk     — commit DJIAutomatePPKV2.py (prompts for a tag, then Y/n before pushing)
@@ -32,15 +35,34 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 BUILDS = {
     "terra": {
         "name":   "DJI_AUTOMATE_UI",
-        "script": SCRIPT_DIR / "PyAutomateDJI.py",
+        "script": SCRIPT_DIR / "automation" / "PyAutomateDJI.py",
         "extra":  [],
     },
     "ppk": {
         "name":   "DJI_AUTOMATE_PPK",
-        "script": SCRIPT_DIR / "DJIAutomatePPKV2.py",
-        "extra":  ["--add-data", str(SCRIPT_DIR / "embed_ppk_metadata.py") + ";."],
+        "script": SCRIPT_DIR / "automation" / "DJIAutomatePPKV2.py",
+        "extra":  ["--add-data", str(SCRIPT_DIR / "automation" / "embed_ppk_metadata.py") + ";."],
+    },
+    "pix4d": {
+        "name":   "PIX4D_AUTOMATE",
+        "script": SCRIPT_DIR / "automation" / "AutomatePix4D.py",
+        "extra":  [],
+    },
+    "agent": {
+        "name":   "DataIntakeAgent",
+        "script": SCRIPT_DIR / "agent" / "main.py",
+        "extra":  [],
+    },
+    "coordinator": {
+        "name":   "DataIntakeCoordinator",
+        "script": SCRIPT_DIR / "coordinator" / "main.py",
+        "extra":  ["--add-data", str(SCRIPT_DIR / "coordinator" / "dashboard") + ";coordinator/dashboard"],
     },
 }
+
+# `build all` covers just the workstation payload EXEs; agent/coordinator are
+# built explicitly since they deploy on a different cadence.
+PAYLOAD_TARGETS = ["terra", "ppk", "pix4d"]
 
 # Targets that get committed to git instead of (or in addition to) built into
 # an exe. Uses the "commit" sub-command so these keys can overlap with BUILDS
@@ -48,21 +70,24 @@ BUILDS = {
 COMMITS = {
     "pix4d": {
         "name":   "AutomatePix4D",
-        "script": SCRIPT_DIR / "AutomatePix4D.py",
+        "script": SCRIPT_DIR / "automation" / "AutomatePix4D.py",
     },
     "terra": {
         "name":   "PyAutomateDJI",
-        "script": SCRIPT_DIR / "PyAutomateDJI.py",
+        "script": SCRIPT_DIR / "automation" / "PyAutomateDJI.py",
     },
     "ppk": {
         "name":   "DJIAutomatePPKV2",
-        "script": SCRIPT_DIR / "DJIAutomatePPKV2.py",
+        "script": SCRIPT_DIR / "automation" / "DJIAutomatePPKV2.py",
     },
 }
 
 
 def build(target: str) -> int:
     cfg = BUILDS[target]
+    if not cfg["script"].exists():
+        print(f"[skip] {cfg['script']} does not exist yet — nothing to build for '{target}'")
+        return 1
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
@@ -222,7 +247,7 @@ def main():
                 sys.exit(rc)
         return
 
-    targets = list(BUILDS.keys()) if arg == "all" else [arg]
+    targets = PAYLOAD_TARGETS if arg == "all" else [arg]
     if any(t not in BUILDS for t in targets):
         valid = ", ".join(BUILDS)
         print(f"Unknown build target '{arg}'. Use: {valid} or all")

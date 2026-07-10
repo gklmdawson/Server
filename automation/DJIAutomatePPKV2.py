@@ -18,6 +18,10 @@ _t.Timings.after_sendkeys_key_wait = 0.0
 
 _logger = logging.getLogger("dji_ppk")
 
+# Set from --unattended: suppress all dialogs/popups so the script can run
+# under the job agent without anything blocking on human input.
+UNATTENDED = False
+
 def _configure_logging(log_file_path: str):
     """Append this process's stdout/stderr to the Data-Intake log file."""
     _logger.setLevel(logging.DEBUG)
@@ -40,17 +44,16 @@ def _configure_logging(log_file_path: str):
     _logger.info("----- DJI PPK automation started -----")
 
 def _check_dpi_150():
-    """Exit with a popup warning if Windows UI scaling is not set to 150%."""
+    """Exit if Windows UI scaling is not 150% (popup unless --unattended; exit code 2)."""
     dpi = ctypes.windll.user32.GetDpiForSystem()
     if dpi != 144:
         pct = round(dpi / 96 * 100)
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            f"Windows UI scaling is {pct}% (DPI={dpi}).\nThis script requires 150%. Please adjust in Display Settings and re-run.",
-            "Wrong DPI Scale",
-            0x30
-        )
-        raise SystemExit(1)
+        msg = (f"Windows UI scaling is {pct}% (DPI={dpi}).\n"
+               "This script requires 150%. Please adjust in Display Settings and re-run.")
+        print(f"[error] {msg}", file=sys.stderr)
+        if not UNATTENDED:
+            ctypes.windll.user32.MessageBoxW(0, msg, "Wrong DPI Scale", 0x30)
+        raise SystemExit(2)
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
     print("[ok] DPI scaling confirmed at 150%")
 
@@ -476,7 +479,11 @@ def _send_path_to_browse_dialog(file_dlg, path):
 # ── Error dialog ─────────────────────────────────────────────────
 
 def _show_error_dialog(title: str, error_text: str) -> None:
-    """Error dialog with scrollable traceback and an Export to .txt button."""
+    """Error dialog with scrollable traceback and an Export to .txt button.
+    Suppressed under --unattended so a failure can never block on human input."""
+    if UNATTENDED:
+        print(f"[error] {title} (dialog suppressed by --unattended)", file=sys.stderr)
+        return
     import tkinter as tk
     from tkinter import filedialog, scrolledtext
 
@@ -531,7 +538,11 @@ if __name__ == "__main__":
     _parser.add_argument("--terra-path",       default=None)
     _parser.add_argument("--ppk-path",         default=None)
     _parser.add_argument("--log-file",         default=None)
+    _parser.add_argument("--unattended",       action="store_true",
+                         help="suppress all dialogs/popups; errors go to stderr + exit code")
     _args = _parser.parse_args()
+
+    UNATTENDED = _args.unattended
 
     if _args.log_file:
         _configure_logging(_args.log_file)
@@ -561,15 +572,17 @@ if __name__ == "__main__":
         ("--ppk-path",     _args.ppk_path),
     ] if not v]
     if _missing:
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            f"WARNING: The following arguments were not passed from Data-Intake:\n\n"
+        _warn = (
+            "WARNING: The following arguments were not passed from Data-Intake:\n\n"
             + "\n".join(f"  {m}" for m in _missing)
             + "\n\nFalling back to DJI_PARAMETERS.ini values.\n"
-              "Launch from Data-Intake for automatic project configuration.",
-            "Not Launched from Data-Intake",
-            0x30  # MB_ICONWARNING | MB_OK
+              "Launch from Data-Intake for automatic project configuration."
         )
+        print(f"[warn] {_warn}")
+        if not UNATTENDED:
+            ctypes.windll.user32.MessageBoxW(
+                0, _warn, "Not Launched from Data-Intake", 0x30  # MB_ICONWARNING | MB_OK
+            )
 
     try:
         _check_dpi_150()

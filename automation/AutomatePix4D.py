@@ -1,3 +1,4 @@
+import argparse
 import configparser
 import inspect
 import logging
@@ -25,11 +26,25 @@ _logger = logging.getLogger("pix4d")
 
 PIX4D_EXE = r"C:\Program Files\Pix4Dmatic\PIX4Dmatic.exe"
 
-PROJECT_NAME = "SilverPeak"  # TODO: will be passed in from data_intake.py
-PROJECT_ROOT = r"D:\3dData\Brahma\SilverPeak\11Jun2026"  # TODO: will be passed in from data_intake.py
-EPSG_CODE_H = "32611"  # TODO: will be passed in from data_intake.py
-EPSG_CODE_V = "EPSG:8228"  # TODO: will be passed in from data_intake.py
-PROJECT_TAT = r"D:\3dData\Brahma\SilverPeak\11Jun2026\SINGLE_TLT.csv"  # TODO: will be passed in from data_intake.py
+# Populated from CLI args in main(). --dev (or --step) runs fall back to
+# _DEV_DEFAULTS below so the original edit-and-run workflow still works.
+PROJECT_NAME = ""
+PROJECT_ROOT = ""
+EPSG_CODE_H = ""
+EPSG_CODE_V = ""
+PROJECT_TAT = ""
+
+_DEV_DEFAULTS = {
+    "project_name": "SilverPeak",
+    "project_root": r"D:\3dData\Brahma\SilverPeak\11Jun2026",
+    "epsg_h":       "32611",
+    "epsg_v":       "EPSG:8228",
+    "tat_path":     r"D:\3dData\Brahma\SilverPeak\11Jun2026\SINGLE_TLT.csv",
+}
+
+# Set from --unattended: suppress all dialogs/popups so the script can run
+# under the job agent without anything blocking on human input.
+UNATTENDED = False
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")  # matches data_intake.py's Config.IMAGE_EXTENSIONS
 
@@ -85,17 +100,16 @@ def _send_path_to_browse_dialog(file_dlg, path):
 
 
 def _check_dpi_150():
-    """Exit with a popup warning if Windows UI scaling is not set to 150%."""
+    """Exit if Windows UI scaling is not 150% (popup unless --unattended; exit code 2)."""
     dpi = ctypes.windll.user32.GetDpiForSystem()
     if dpi != 144:
         pct = round(dpi / 96 * 100)
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            f"Windows UI scaling is {pct}% (DPI={dpi}).\nThis script requires 150%. Please adjust in Display Settings and re-run.",
-            "Wrong DPI Scale",
-            0x30  # MB_ICONWARNING | MB_OK
-        )
-        raise SystemExit(1)
+        msg = (f"Windows UI scaling is {pct}% (DPI={dpi}).\n"
+               "This script requires 150%. Please adjust in Display Settings and re-run.")
+        print(f"[error] {msg}", file=sys.stderr)
+        if not UNATTENDED:
+            ctypes.windll.user32.MessageBoxW(0, msg, "Wrong DPI Scale", 0x30)  # MB_ICONWARNING | MB_OK
+        raise SystemExit(2)
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
     _logger.info("DPI scaling confirmed at 150%")
 
@@ -585,28 +599,79 @@ def _watch_for_quit(automation: Pix4DAutomation):
         time.sleep(0.1)
 
 
-def main():
-    dev_mode = "--dev" in sys.argv
+def _parse_step_list(raw: str) -> list:
+    parts = raw.split(",")
+    if not all(p.isdigit() and int(p) in Pix4DAutomation.STEPS for p in parts):
+        valid = ", ".join(f"{n} ({name})" for n, name in sorted(Pix4DAutomation.STEPS.items()))
+        raise SystemExit(f"--step must be a comma-separated list of: {valid}")
+    return [int(p) for p in parts]
 
-    only_steps = None
-    if "--step" in sys.argv:
-        raw = sys.argv[sys.argv.index("--step") + 1]
-        parts = raw.split(",")
-        if not all(p.isdigit() and int(p) in Pix4DAutomation.STEPS for p in parts):
-            valid = ", ".join(f"{n} ({name})" for n, name in sorted(Pix4DAutomation.STEPS.items()))
-            raise SystemExit(f"--step must be a comma-separated list of: {valid}")
-        only_steps = [int(p) for p in parts]
+
+def main():
+    global PROJECT_NAME, PROJECT_ROOT, EPSG_CODE_H, EPSG_CODE_V, PROJECT_TAT, PIX4D_EXE, UNATTENDED
+
+    parser = argparse.ArgumentParser(description="PIX4Dmatic automation")
+    parser.add_argument("--project-name", default=None)
+    parser.add_argument("--project-root", default=None,
+                        help="date folder: images imported from <root>\\PPK, project created in <root>\\Pix4D")
+    parser.add_argument("--epsg-h",       default=None)
+    parser.add_argument("--epsg-v",       default=None)
+    parser.add_argument("--tat-path",     default=None, help="targets (TAT) csv, imported as-is")
+    parser.add_argument("--exe-path",     default=None, help="PIX4Dmatic.exe location override")
+    parser.add_argument("--log-file",     default=None)
+    parser.add_argument("--unattended",   action="store_true",
+                        help="suppress all dialogs/popups; errors go to stderr + exit code")
+    parser.add_argument("--dev",          action="store_true",
+                        help="dev mode: 'q' kill switch, missing args fall back to _DEV_DEFAULTS")
+    parser.add_argument("--step",         default=None,
+                        help="comma-separated step numbers to run in isolation (also uses _DEV_DEFAULTS)")
+    args = parser.parse_args()
+
+    UNATTENDED = args.unattended
+    if args.exe_path:
+        PIX4D_EXE = args.exe_path
+
+    values = {
+        "project_name": args.project_name,
+        "project_root": args.project_root,
+        "epsg_h":       args.epsg_h,
+        "epsg_v":       args.epsg_v,
+        "tat_path":     args.tat_path,
+    }
+    if args.dev or args.step:
+        values = {k: (v if v is not None else _DEV_DEFAULTS[k]) for k, v in values.items()}
+    missing = [f"--{k.replace('_', '-')}" for k, v in values.items() if v is None]
+    if missing:
+        raise SystemExit(
+            f"Missing required arguments: {', '.join(missing)} (or pass --dev to use _DEV_DEFAULTS)"
+        )
+
+    PROJECT_NAME = values["project_name"]
+    PROJECT_ROOT = values["project_root"]
+    EPSG_CODE_H  = values["epsg_h"]
+    EPSG_CODE_V  = values["epsg_v"]
+    PROJECT_TAT  = values["tat_path"]
+
+    only_steps = _parse_step_list(args.step) if args.step else None
+    if only_steps is not None:
         names = ", ".join(f"{n} ({Pix4DAutomation.STEPS[n]})" for n in only_steps)
         print(f"[--step] Running only step(s): {names}")
 
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file, mode="a", encoding="utf-8"))
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=handlers,
+    )
+    _logger.info(
+        f"[cfg] PROJECT_NAME={PROJECT_NAME!r} PROJECT_ROOT={PROJECT_ROOT!r} "
+        f"EPSG_H={EPSG_CODE_H!r} EPSG_V={EPSG_CODE_V!r} TAT={PROJECT_TAT!r}"
     )
 
     automation = Pix4DAutomation()
-    if dev_mode:
+    if args.dev:
         _logger.info("Dev mode enabled — press 'q' at any time to quit.")
         threading.Thread(target=_watch_for_quit, args=(automation,), daemon=True).start()
 

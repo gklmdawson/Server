@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# PyInstaller output
+/dist/
+/build/
+
+# Coordinator runtime data (SQLite lives on the host's local disk, never in git)
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local scratch
+*.log
