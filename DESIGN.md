@@ -270,6 +270,7 @@ POST /jobs/{id}/started             # idempotent
 POST /jobs/{id}/progress            # percent/stage/message → job + event log
 POST /jobs/{id}/succeeded           # includes validation summary; idempotent
 POST /jobs/{id}/failed              # error code/message + artifacts path; idempotent
+POST /jobs/{id}/cancelled           # agent confirms a delivered cancel; idempotent
 ```
 
 `/sync` request: agent version, capabilities, active job ids + progress snapshot,
@@ -282,6 +283,7 @@ Intake/admin-facing:
 ```text
 POST /projects                      # create project + job chain from a template
 POST /jobs                          # create a single job
+POST /nodes                         # provision a node; returns its token once
 GET  /projects /projects/{id} /jobs /jobs/{id} /nodes
 POST /jobs/{id}/retry  /jobs/{id}/cancel
 POST /nodes/{name}/drain /nodes/{name}/enable /nodes/{name}/disable

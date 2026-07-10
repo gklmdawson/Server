@@ -1,0 +1,48 @@
+# Data Intake Coordinator configuration
+# Copy to coordinator.yaml next to the EXE (or pass --config / set
+# DATA_INTAKE_COORDINATOR_CONFIG) and adjust.
+
+host: 0.0.0.0
+port: 8443
+
+# SQLite file on the coordinator's LOCAL disk — never on the NAS/a share.
+db_path: C:/ProgramData/DataIntakeCoordinator/data/coordinator.db
+
+# Agents must present their per-node bearer token (create nodes + tokens with
+# POST /api/v1/nodes). Set to false only during first bring-up.
+require_agent_tokens: true
+
+# Token for admin/intake endpoints (create projects/jobs, retry, cancel,
+# node control). Prefer the DATA_INTAKE_ADMIN_TOKEN environment variable
+# over putting it here.
+admin_token: ""
+
+# Scheduling / housekeeping
+lease_minutes: 5              # ASSIGNED with no start report -> requeued
+max_assign_attempts: 3        # lease strikes before NEEDS_ATTENTION
+offline_after_seconds: 90     # node shown offline after this long without a sync
+attention_after_seconds: 600  # RUNNING job on an offline node -> NEEDS_ATTENTION
+stalled_after_seconds: 900    # dashboard-only "stalled?" flag
+poll_idle_seconds: 10
+poll_busy_seconds: 30
+
+# Per-job-type runtime caps (minutes); the agent kills the payload past this.
+default_max_runtime_minutes: 1440
+job_max_runtime_minutes:
+  TERRA_PPK: 720
+  TERRA_LIDAR: 2880
+  PIX4D_MATIC: 2880
+  CYCLONE_CLASSIFY: 1440
+
+# Workflow chain templates instantiated by POST /api/v1/projects.
+templates:
+  photo_ppk:
+    - job_type: TERRA_PPK
+    - job_type: PIX4D_MATIC
+      depends_on: [TERRA_PPK]
+  lidar:
+    - job_type: TERRA_LIDAR
+    - job_type: CYCLONE_CLASSIFY
+      depends_on: [TERRA_LIDAR]
+
+log_level: INFO

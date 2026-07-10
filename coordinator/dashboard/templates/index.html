@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Intake Coordinator</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #1a2733; --muted: #5f7385;
+    --border: #dde4ea; --accent: #1a6496;
+    --ok: #1e8e3e; --warn: #b26a00; --bad: #c5221f; --idle: #5f7385;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12181f; --card: #1a232d; --text: #e4ecf2; --muted: #8fa3b3;
+      --border: #2b3947; --accent: #5aa9dd;
+      --ok: #4caf50; --warn: #e0a030; --bad: #ef5350; --idle: #8fa3b3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 14px 20px 4px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { padding: 8px 20px 40px; display: grid; gap: 16px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+               color: var(--muted); margin: 0 0 8px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 5px 10px 5px 0; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--border); }
+  td { border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--muted); font-style: italic; padding: 4px 0; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .ok { background: var(--ok); } .bad { background: var(--bad); }
+  .warn { background: var(--warn); } .idle { background: var(--idle); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+          border: 1px solid var(--border); }
+  .pill.RUNNING { color: var(--accent); border-color: var(--accent); }
+  .pill.QUEUED, .pill.ASSIGNED { color: var(--muted); }
+  .pill.SUCCEEDED { color: var(--ok); border-color: var(--ok); }
+  .pill.FAILED, .pill.NEEDS_ATTENTION { color: var(--bad); border-color: var(--bad); }
+  .pill.CANCELLED { color: var(--warn); border-color: var(--warn); }
+  .bar { background: var(--border); border-radius: 4px; height: 8px; width: 130px; display: inline-block; vertical-align: middle; }
+  .bar > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+  .msg { color: var(--muted); font-size: 12px; max-width: 340px; overflow: hidden;
+         text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+  #conn { font-size: 12px; }
+  #attention-section { border-color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Data Intake Coordinator</h1>
+  <span class="meta" id="conn">connecting…</span>
+</header>
+<main>
+  <section>
+    <h2>Nodes</h2>
+    <div class="tablewrap"><table id="nodes"></table></div>
+  </section>
+  <section id="attention-section" style="display:none">
+    <h2>Attention required</h2>
+    <div class="tablewrap"><table id="attention"></table></div>
+  </section>
+  <section>
+    <h2>Running</h2>
+    <div class="tablewrap"><table id="running"></table></div>
+  </section>
+  <section>
+    <h2>Queue</h2>
+    <div class="tablewrap"><table id="queue"></table></div>
+  </section>
+  <section>
+    <h2>Recently finished</h2>
+    <div class="tablewrap"><table id="recent"></table></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function ago(iso) {
+  if (!iso) return "—";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 129600) return (s / 3600).toFixed(1) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+const pill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
+const bar = p => p == null ? "" :
+  `<span class="bar"><i style="width:${Math.max(0, Math.min(100, p))}%"></i></span> ${p.toFixed(0)}%`;
+
+function table(el, headers, rows, emptyText) {
+  if (!rows.length) { el.innerHTML = `<tr><td class="empty">${emptyText}</td></tr>`; return; }
+  el.innerHTML =
+    "<tr>" + headers.map(h => `<th>${h}</th>`).join("") + "</tr>" +
+    rows.map(r => "<tr>" + r.map(c => `<td>${c}</td>`).join("") + "</tr>").join("");
+}
+
+function jobName(j) {
+  const proj = j.project_name ? esc(j.project_name) + " · " : "";
+  return `${proj}<b>${esc(j.job_type)}</b>`;
+}
+
+function render(d) {
+  $("conn").textContent =
+    `v${d.version} · updated ${new Date().toLocaleTimeString()} · server ${d.server_time}`;
+
+  table($("nodes"),
+    ["", "Node", "State", "Capabilities", "Current job", "Progress", "Agent", "Last sync"],
+    d.nodes.map(n => {
+      const state = !n.online ? "offline"
+        : !n.enabled ? "disabled"
+        : n.draining ? "draining"
+        : !n.accepting_jobs ? "paused"
+        : n.active_job ? "busy" : "idle";
+      const dotCls = !n.online ? "bad" : n.active_job ? "ok" : (state === "idle" ? "idle" : "warn");
+      return [
+        `<span class="dot ${dotCls}"></span>`,
+        `<b>${esc(n.node_name)}</b>`,
+        esc(state),
+        esc((n.capabilities || []).join(", ")),
+        n.active_job ? jobName(n.active_job) : "—",
+        n.active_job ? bar(n.active_job.progress_percent) : "",
+        esc(n.agent_version || "—"),
+        ago(n.last_sync_at),
+      ];
+    }), "No nodes have registered yet.");
+
+  const att = d.attention || [];
+  $("attention-section").style.display = att.length ? "" : "none";
+  table($("attention"),
+    ["Job", "Status", "Node", "Error", "When"],
+    att.map(j => [
+      jobName(j), pill(j.status), esc(j.assigned_node || "—"),
+      `<span class="msg" title="${esc(j.error_message)}">${esc(j.error_code)} ${esc(j.error_message)}</span>`,
+      ago(j.finished_at || j.last_progress_at || j.created_at),
+    ]), "");
+
+  table($("running"),
+    ["Job", "Node", "Progress", "Message", "Started", "Last update"],
+    (d.running || []).map(j => [
+      jobName(j) + (j.stalled ? ' <span class="pill FAILED">stalled?</span>' : ""),
+      esc(j.assigned_node), bar(j.progress_percent),
+      `<span class="msg" title="${esc(j.progress_message)}">${esc(j.progress_message)}</span>`,
+      ago(j.started_at), ago(j.last_progress_at),
+    ]), "Nothing running.");
+
+  table($("queue"),
+    ["Job", "Status", "Priority", "Waiting on", "Node", "Created"],
+    (d.queue || []).map(j => [
+      jobName(j), pill(j.status), j.priority,
+      (j.waiting_on && j.waiting_on.length) ? j.waiting_on.length + " dep(s)" : "—",
+      esc(j.assigned_node || "—"), ago(j.created_at),
+    ]), "Queue is empty.");
+
+  table($("recent"),
+    ["Job", "Status", "Node", "Finished"],
+    (d.recent || []).map(j => [
+      jobName(j), pill(j.status), esc(j.assigned_node || "—"), ago(j.finished_at),
+    ]), "Nothing finished yet.");
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/v1/status");
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+  } catch (e) {
+    $("conn").textContent = "coordinator unreachable (" + e + ")";
+  }
+}
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>
