@@ -10,7 +10,7 @@ logged-in session. Full architecture and phased plan: **[DESIGN.md](DESIGN.md)**
 | Path | What it is |
 |---|---|
 | `coordinator/` | FastAPI coordinator: SQLite job DB, `/sync` assignment, dashboard |
-| `agent/` | Workstation agent (Phase 2) |
+| `agent/` | Workstation agent: sync loop, desktop preflight, job runner with watchdog + crash recovery |
 | `processors/` | Per-application processor modules (Phases 3–5) |
 | `automation/` | The GUI-automation payload scripts (run as EXEs on workstations) |
 | `shared/` | Enums + API schemas shared by all components |
@@ -22,10 +22,11 @@ logged-in session. Full architecture and phased plan: **[DESIGN.md](DESIGN.md)**
 ## Coordinator quickstart (dev)
 
 ```bash
-pip install -e ".[coordinator,dev]"
+pip install -e ".[coordinator,agent,dev]"
 python -m coordinator.main                # http://127.0.0.1:8443 — dashboard at /
+python -m agent.main --config agent.yaml  # real agent (see config/agent.example.yaml)
 python scripts/fake_agent.py --node TERRA-01 --capabilities TERRA_PPK,TERRA_LIDAR
-pytest                                     # 35 tests
+pytest                                     # 50 tests
 ```
 
 Create a project with a workflow chain:

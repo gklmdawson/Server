@@ -177,9 +177,10 @@ Server/
 │   └── dashboard/
 ├── agent/
 │   ├── main.py            # sync loop → run job → report
+│   ├── client.py          # coordinator HTTP client (retrying, idempotent reports)
 │   ├── preflight.py       # desktop / NAS / app checks (per job type)
 │   ├── runner.py          # subprocess launch (output → log file), watchdog,
-│   │                      # local state file, failure bundle
+│   │                      # local state file, failure bundle, crash recovery
 │   └── config.py
 ├── processors/
 │   ├── base.py            # interface + SubprocessProcessor

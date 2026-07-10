@@ -20,10 +20,11 @@ coordinator = [
     "SQLAlchemy>=2.0,<3",
     "jinja2>=3.1",
 ]
-# The workstation agent (Phase 2).
+# The workstation agent.
 agent = [
     "httpx>=0.26",
     "psutil>=5.9",
+    "Pillow>=10",     # failure-bundle screenshots (Windows)
 ]
 # The GUI-automation payload scripts (Windows workstations only).
 automation = [
@@ -42,6 +43,7 @@ dev = [
     "uvicorn>=0.27",
     "SQLAlchemy>=2.0,<3",
     "jinja2>=3.1",
+    "psutil>=5.9",
     "pyinstaller>=6",
 ]
 

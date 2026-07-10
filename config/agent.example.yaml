@@ -1,0 +1,37 @@
+# Data Intake Agent configuration
+# Copy to agent.yaml next to DataIntakeAgent.exe and adjust per machine.
+
+node_name: TERRA-01
+coordinator_url: http://192.168.35.67:8443
+
+# The node's bearer token is read from this environment variable (set for the
+# processing account by scripts/install_agent.ps1). Create the token with:
+#   POST /api/v1/nodes  {"node_name": "TERRA-01", "capabilities": [...]}
+token_env: DATA_INTAKE_NODE_TOKEN
+
+# Job types this machine runs — must match processors that exist.
+# TERRA-01:   [TERRA_PPK, TERRA_LIDAR]
+# PIX4D-01:   [PIX4D_MATIC]
+# CYCLONE-01: [CYCLONE_CLASSIFY]
+capabilities:
+  - TERRA_PPK
+  - TERRA_LIDAR
+
+# Agent-local working area: logs, per-job payload logs, failure bundles,
+# and the crash-recovery state file. NOT project data (that stays on the NAS).
+work_root: C:/ProgramData/DataIntakeAgent
+
+# Desktop preflight for GUI-automation payloads. While these fail the agent
+# pauses assignment (dashboard shows the reasons) instead of failing jobs.
+require_dpi_150: true
+expected_resolution: []        # e.g. [3840, 2160]; empty disables the check
+
+# Payload/application locations, read by the processors (Phase 3+).
+payload_paths:
+  dji_automate_ppk: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_PPK.exe
+  dji_automate_ui: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_UI.exe
+  pix4d_automate: Z:/Survey/UT/_Scripts/Automate UI/dist/PIX4D_AUTOMATE.exe
+
+keep_job_dirs_days: 7
+request_timeout_seconds: 15
+log_level: INFO
