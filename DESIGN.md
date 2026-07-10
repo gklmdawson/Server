@@ -1,7 +1,7 @@
-# Job Queue Server — Design (v2 — decisions folded in)
+# Job Queue Server — Design (v2.1 — converged)
 
 **Repo:** `gklmdawson/Server` · **Branch:** `claude/job-queue-server-design-0rvfqg`
-**Status:** direction agreed; remaining opens in §12 are small and don't block Phase 0–1.
+**Status:** converged — ready to execute. Only watch items remain (§12).
 
 This is the ChatGPT build spec ("Data Intake Distributed Processing System") reviewed
 against the actual code (`data_intake.py`, `classify_3dr.py`, the three automation
@@ -20,7 +20,12 @@ this doc wins.
 * Terra LiDAR completion signal is **known**: `…/<project>_LiDAR/lidars/report/report.md`
   (already used by `classify_3dr.py`).
 * Cyclone 3DR is **CLI automation, not GUI** (`3DR.exe --Script=… --scriptAutorun --silent`).
-* Coordinator host: **192.168.35.67** (one of the processing machines, dual role).
+* Coordinator host: **192.168.35.67 — the Pix4D machine** (dual role: coordinator + agent).
+* `SINGLE_TLT.csv` is **Terra-LiDAR-only** (that script extracts TLT rows itself).
+  **Pix4D consumes the TAT csv directly** — no extraction step anywhere else.
+* Pix4Dmatic progress/completion comes from **tailing its logs** (rich stage +
+  completion logging); the **orthomosaic is the final export** to validate; the
+  automation then **saves the project and closes Pix4Dmatic**.
 * `DJI_PARAMETERS.ini` is standalone-run fallback only — ignored by this system.
 
 ---
@@ -88,7 +93,8 @@ Findings that shape the design:
 5. **One job per machine is structural, not policy.** Two pywinauto automations fight
    over foreground focus. `max_parallel_jobs` is always 1.
 6. **`AutomatePix4D.py` needs parameterizing** (argparse, same pattern as the Terra
-   scripts) before it can be queued.
+   scripts) before it can be queued — and it currently ends at clicking *Start*, so
+   Phase 4 adds save-project + close-app steps for after processing completes.
 7. **The business-hours logic in `classify_3dr.py` becomes queue semantics.** Today:
    if classification fails 8am–5pm MST (human likely using 3DR), sleep until 5pm and
    retry. In the queue: the agent's preflight rejects a Cyclone job while `3DR.exe`
@@ -130,7 +136,7 @@ structured logs; failure artifacts including screenshots; mock processor first.
 ```text
                        ┌─────────────────────────────────────────┐
    INTAKE MACHINE      │  COORDINATOR — 192.168.35.67            │
-   data_intake.py      │  (co-hosted on a processing machine)    │
+   data_intake.py      │  (co-hosted on the Pix4D machine)       │
    copies data +       │  FastAPI + Uvicorn (single worker)      │
    converts RINEX,  ──▶│  SQLite (WAL, local disk)               │
    then POSTs          │  Dashboard (Jinja2 + 5s fetch polling)  │
@@ -152,9 +158,10 @@ structured logs; failure artifacts including screenshots; mock processor first.
                                     PPK, Terra, Pix4D, …}
 ```
 
-The coordinator machine also runs its own agent — coordinator and agent are separate
-processes and don't special-case each other. If that box reboots, agents elsewhere
-just back off and reconnect (§7); nothing is lost because all state is in SQLite.
+The coordinator lives on the Pix4D machine, which also runs its own agent —
+coordinator and agent are separate processes and don't special-case each other (the
+coordinator is featherweight next to a Pix4D run). If that box reboots, agents
+elsewhere just back off and reconnect (§7); nothing is lost — all state is in SQLite.
 
 Repo layout (this repo):
 
@@ -349,7 +356,7 @@ into importable modules** — they move to `automation/` unchanged (plus
 |---|---|---|---|
 | `terra_ppk` | `DJI_AUTOMATE_PPK.exe` | Script runs to completion itself (waits for `POS.txt`, embeds EXIF) → exit code | `POS.txt` exists; embedded image count > 0 under `<date>/PPK` |
 | `terra_lidar` | `DJI_AUTOMATE_UI.exe` | EXE exits after *Start Reconstruction*; agent then watches for `<terra>/<project>_LiDAR/lidars/report/report.md` (poll ~60s, per `classify_3dr.py`) | `report.md` present; `.las/.laz` in `lidars/terra_laz/`, > min size, mtime > job start |
-| `pix4dmatic` | `AutomatePix4D.py` (parameterized in Phase 0) | Watch Pix4D project dir for final outputs/report after Start | Expected exports exist, > min size (exact list: §12.4) |
+| `pix4dmatic` | `AutomatePix4D.py` (parameterized in Phase 0; save + close steps added in Phase 4) | **Tail Pix4Dmatic's log** (watchdog-style file watch) — it logs each processing stage and completion; stage lines feed progress updates | Log reports completion; **orthomosaic** (the final export) exists, > min size, mtime > job start. Automation then saves the project and closes Pix4Dmatic |
 | `cyclone_classify` | `3DR.exe --Script=ClassifyLAZ.js --scriptAutorun --silent --scriptParam=…` per LAZ file | Output `.3dr` file appears + size stable ~20s (port of `classify_3dr._classify_one`, incl. 6h per-file timeout and the ≥8GB merged-vs-tiles rule) | One `.3dr` per input LAZ |
 
 **Job parameters** (exactly what `data_intake._handle_complete()` builds today):
@@ -359,9 +366,14 @@ TERRA_PPK:        project_name, project_location=<date>/PPK, data_source=<flight
                   terra_path=<date>/Terra, ppk_path=<date>/PPK, epsg_h, epsg_v
 TERRA_LIDAR:      project_name, project_location=<date>/Terra, data_source=<sensor dir>,
                   gcp_path, epsg_h, epsg_v, no_targets
-PIX4D_MATIC:      project_name, project_root=<date>, epsg_h, epsg_v, tat_path
+PIX4D_MATIC:      project_name, project_root=<date>, epsg_h, epsg_v,
+                  tat_path (the targets/TAT csv from intake, used as-is)
 CYCLONE_CLASSIFY: terra_folder=<date>/Terra, project_name=<name>_LiDAR, model_name
 ```
+
+Note on targets files: the Terra LiDAR script extracts TLT rows from the targets
+CSV into `SINGLE_TLT.csv` for its own GCP import — that file is LiDAR-only.
+Pix4D imports the TAT csv directly; no extraction happens outside the LiDAR script.
 
 **Chain templates** (coordinator config; intake picks one per submission):
 
@@ -409,7 +421,7 @@ the rest. Capability strings = job types, declared in each agent's config.
 * Per-node bearer token (random, hashed in DB), installed once per machine.
   Dashboard on the LAN, simple shared admin token initially; HTTPS via reverse
   proxy later if exposure grows.
-* **Coordinator** on 192.168.35.67: `coordinator.exe` (PyInstaller) under Task
+* **Coordinator** on 192.168.35.67 (the Pix4D machine): `coordinator.exe` (PyInstaller) under Task
   Scheduler at-boot (or NSSM), single worker, one inbound firewall rule TCP 8443
   scoped to the LAN subnet. SQLite + logs under `C:\ProgramData\DataIntakeCoordinator\`.
 * **Agents**: `agent.exe` (PyInstaller) via Task Scheduler at-logon of the
@@ -454,9 +466,11 @@ NEEDS_ATTENTION with evidence — never duplicated, never silently lost.
 outputs validated on the NAS, job completes hands-off.
 
 **Phase 4 — Pix4D node + photo chain**
-`pix4dmatic` processor on the parameterized script; `photo_ppk` template end-to-end
-(PPK on Terra box → Pix4Dmatic on Pix4D box via the NAS PPK folder). Resolve the
-`SINGLE_TLT.csv` source for photo-only runs (§12.2).
+`pix4dmatic` processor on the parameterized script: log-tail progress/completion,
+ortho validation, and new save-project + close-app automation steps (script
+currently ends at *Start*); pin down the Pix4Dmatic log path + stage strings on
+the machine; `photo_ppk` template end-to-end (PPK on Terra box → Pix4Dmatic on
+Pix4D box via the NAS PPK folder).
 ✓ One submission drives both machines in sequence.
 
 **Phase 5 — Cyclone node + LiDAR chain**
@@ -474,19 +488,18 @@ into processing machines for normal work.
 
 ---
 
-## 12. Remaining open items (none block Phases 0–2)
+## 12. Watch items (nothing blocks execution)
 
-1. **Which machine is 192.168.35.67** (Terra / Pix4D / Cyclone box?) — record its
-   name; confirm it's always-on and has a local disk location for the DB. Needed by
-   Phase 1 install.
-2. **`SINGLE_TLT.csv` for photo-only runs**: today the Terra *LiDAR* script extracts
-   TLT rows from the GCP CSV. When only the photo chain runs, should the
-   `pix4dmatic` processor (or intake) do that extraction from `gcp_path`? Needed by
-   Phase 4.
-3. **In-place NAS processing performance**: Terra/Pix4D project folders will live on
-   the UGREEN share (GUI copies there; agents work in place — decided). If a real
-   job shows SMB slowness/instability, the fallback is agent-side scratch staging;
-   the job model keeps `scratch_path` so this can be added per job type without
-   schema changes. Watch during Phases 3–4.
-4. **Pix4D expected outputs**: exact export set to validate (LAS? orthomosaic?
-   report?) — list what a good Pix4Dmatic run leaves behind. Needed by Phase 4.
+1. **In-place NAS processing performance**: Terra/Pix4D project folders live on the
+   UGREEN share (GUI copies there; agents work in place — decided). If a real job
+   shows SMB slowness/instability, the fallback is agent-side scratch staging; the
+   job model keeps `scratch_path` so this can be added per job type without schema
+   changes. Watch during Phases 3–4.
+2. **Pix4Dmatic log specifics**: log tailing is the decided progress/completion
+   source; the exact log path and stage strings get pinned down on the Pix4D
+   machine during Phase 4.
+
+Resolved 2026-07-10: coordinator host = the Pix4D machine (192.168.35.67);
+`SINGLE_TLT.csv` is Terra-LiDAR-only and Pix4D consumes the TAT csv directly;
+Pix4D completion = log-reported completion + orthomosaic present, then the
+automation saves the project and closes Pix4Dmatic.
