@@ -26,11 +26,17 @@ work_root: C:/ProgramData/DataIntakeAgent
 require_dpi_150: true
 expected_resolution: []        # e.g. [3840, 2160]; empty disables the check
 
-# Payload/application locations, read by the processors (Phase 3+).
+# Payload/application locations, read by the processors. Only the keys for
+# this machine's capabilities need to exist.
 payload_paths:
+  # TERRA-01
   dji_automate_ppk: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_PPK.exe
   dji_automate_ui: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_UI.exe
+  # PIX4D-01
   pix4d_automate: Z:/Survey/UT/_Scripts/Automate UI/dist/PIX4D_AUTOMATE.exe
+  # CYCLONE-01
+  cyclone_3dr_exe: C:/Program Files/Leica Geosystems/Cyclone 3DR/3DR.exe
+  cyclone_classify_script: Z:/Survey/UT/_Scripts/3DR/LAZ-Classify/ClassifyLAZ.js
 
 keep_job_dirs_days: 7
 request_timeout_seconds: 15

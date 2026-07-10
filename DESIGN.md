@@ -1,7 +1,10 @@
 # Job Queue Server — Design (v2.1 — converged)
 
 **Repo:** `gklmdawson/Server` · **Branch:** `claude/job-queue-server-design-0rvfqg`
-**Status:** converged — ready to execute. Only watch items remain (§12).
+**Status:** implemented through Phase 5 code (coordinator, agent, all four
+processors, intake client — 80 tests). Remaining: on-machine deployment and
+calibration (see README "On-machine work remaining") and the Phase 6 GUI
+cutover. Watch items in §12.
 
 This is the ChatGPT build spec ("Data Intake Distributed Processing System") reviewed
 against the actual code (`data_intake.py`, `classify_3dr.py`, the three automation

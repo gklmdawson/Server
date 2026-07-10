@@ -60,6 +60,10 @@ class Processor:
 
     job_types: ClassVar[set[str]] = set()
     requires_desktop: ClassVar[bool] = False   # GUI automation payloads only
+    # True for processors that launch multiple payload processes themselves
+    # (e.g. Cyclone runs 3DR.exe once per LAZ file). The runner then calls
+    # run_custom() instead of build_command()+watchdog.
+    custom_execution: ClassVar[bool] = False
     version: ClassVar[str] = "0"
 
     def __init__(self, agent_cfg) -> None:
@@ -90,6 +94,13 @@ class Processor:
         Must poll `cancelled()` regularly and return promptly when it's true.
         Raise ProcessorError to fail the job."""
         return None
+
+    def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
+        """Full execution for custom_execution processors. Must honor
+        `cancelled()` promptly and self-enforce ctx.max_runtime_seconds
+        (the runner's per-process watchdog doesn't apply here).
+        `progress(percent, stage, message)` reports to the coordinator."""
+        raise NotImplementedError
 
     def validate_outputs(self, ctx: JobContext) -> Validation:
         raise NotImplementedError

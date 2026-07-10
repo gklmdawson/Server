@@ -287,6 +287,10 @@ class JobRunner:
                 ctx.job_uuid, None, "PREFLIGHT_FAILED", "; ".join(errors)))
             return
 
+        if processor.custom_execution:
+            self._execute_custom(ctx, processor)
+            return
+
         try:
             cmd = processor.build_command(ctx)
         except Exception as exc:
@@ -376,6 +380,69 @@ class JobRunner:
                 time.sleep(0.5)
 
         self._finish(ctx, processor)
+
+    def _execute_custom(self, ctx: JobContext, processor: Processor) -> None:
+        """Execution path for processors that launch their own payload
+        processes (custom_execution=True). The state file carries no pid —
+        recovery after a crash goes straight to output validation, which such
+        processors make resumable (already-produced outputs are skipped on
+        retry)."""
+        ctx.started_wall = time.time()
+        write_json_atomic(self.cfg.state_file, {
+            "job_uuid": ctx.job_uuid, "job_type": ctx.job_type,
+            "parameters": ctx.parameters,
+            "max_runtime_minutes": ctx.max_runtime_seconds / 60.0,
+            "pid": None, "pid_create_time": None,
+            "started_at": utcnow_iso(),
+            "work_dir": str(ctx.work_dir), "log_path": str(ctx.log_path),
+            "agent_version": AGENT_VERSION,
+        })
+        self._send_with_retry("started", lambda: self.client.report_started(
+            ctx.job_uuid, pid=None, processor_version=processor.version,
+            agent_version=AGENT_VERSION))
+
+        progress_state = {"percent": None, "message": "", "last_sent": 0.0}
+
+        def progress(percent: Optional[float], stage: str, message: str) -> None:
+            self._set_progress(percent, message)
+            self._report_progress_maybe(ctx, percent, stage, message, progress_state)
+
+        try:
+            validation = processor.run_custom(ctx, progress, self._cancel_event.is_set)
+        except ProcessorError as exc:
+            artifacts = self._make_failure_bundle(ctx, f"run_custom: {exc}")
+            if self._send_with_retry("failed", lambda: self.client.report_failed(
+                    ctx.job_uuid, None, "PROCESSOR_ERROR", str(exc), artifacts)):
+                self._clear_state()
+            return
+        except Exception as exc:
+            logger.exception("run_custom crashed for %s", ctx.job_uuid)
+            artifacts = self._make_failure_bundle(ctx, f"run_custom crashed: {exc}")
+            if self._send_with_retry("failed", lambda: self.client.report_failed(
+                    ctx.job_uuid, None, "PROCESSOR_CRASH", str(exc), artifacts)):
+                self._clear_state()
+            return
+
+        if self._cancel_event.is_set():
+            self._send_with_retry("cancelled", lambda: self.client.report_cancelled(
+                ctx.job_uuid, "Cancelled; in-flight payload killed"))
+            self._clear_state()
+            return
+
+        if validation.ok:
+            if self._send_with_retry("succeeded", lambda: self.client.report_succeeded(
+                    ctx.job_uuid, ctx.exit_code,
+                    message="outputs validated",
+                    outputs=validation.outputs, validation=validation.summary)):
+                self._clear_state()
+        else:
+            artifacts = self._make_failure_bundle(
+                ctx, "validation failed: " + "; ".join(validation.errors))
+            if self._send_with_retry("failed", lambda: self.client.report_failed(
+                    ctx.job_uuid, ctx.exit_code, "VALIDATION_FAILED",
+                    "; ".join(validation.errors) or "output validation failed",
+                    artifacts)):
+                self._clear_state()
 
     # --- completion / validation / terminal reports ----------------------------
 

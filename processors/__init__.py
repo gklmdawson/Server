@@ -8,7 +8,9 @@ config capabilities. The coordinator never changes.
 from __future__ import annotations
 
 from processors.base import Processor, ProcessorError, Validation
+from processors.cyclone_classify import CycloneClassifyProcessor
 from processors.mock import MockProcessor
+from processors.pix4dmatic import Pix4dMaticProcessor
 from processors.terra_lidar import TerraLidarProcessor
 from processors.terra_ppk import TerraPpkProcessor
 
@@ -16,7 +18,8 @@ ALL_PROCESSORS: list[type[Processor]] = [
     MockProcessor,
     TerraPpkProcessor,
     TerraLidarProcessor,
-    # Phase 4/5: Pix4dMaticProcessor, CycloneClassifyProcessor
+    Pix4dMaticProcessor,
+    CycloneClassifyProcessor,
 ]
 
 
