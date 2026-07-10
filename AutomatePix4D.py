@@ -1,0 +1,625 @@
+import configparser
+import inspect
+import logging
+import msvcrt
+import os
+import subprocess
+import sys
+import threading
+import time
+import ctypes
+from pathlib import Path
+from pywinauto import Application, Desktop
+from pywinauto.findwindows import ElementNotFoundError
+from pywinauto.timings import TimeoutError as PWTimeoutError
+from pywinauto.keyboard import send_keys
+from pywinauto import timings as _t
+from pywinauto import mouse
+
+_t.Timings.window_find_retry       = 0.5
+_t.Timings.after_click_wait        = 0.0
+_t.Timings.after_clickinput_wait   = 0.0
+_t.Timings.after_sendkeys_key_wait = 0.0
+
+_logger = logging.getLogger("pix4d")
+
+PIX4D_EXE = r"C:\Program Files\Pix4Dmatic\PIX4Dmatic.exe"
+
+PROJECT_NAME = "SilverPeak"  # TODO: will be passed in from data_intake.py
+PROJECT_ROOT = r"D:\3dData\Brahma\SilverPeak\11Jun2026"  # TODO: will be passed in from data_intake.py
+EPSG_CODE_H = "32611"  # TODO: will be passed in from data_intake.py
+EPSG_CODE_V = "EPSG:8228"  # TODO: will be passed in from data_intake.py
+PROJECT_TAT = r"D:\3dData\Brahma\SilverPeak\11Jun2026\SINGLE_TLT.csv"  # TODO: will be passed in from data_intake.py
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")  # matches data_intake.py's Config.IMAGE_EXTENSIONS
+
+
+def _count_images(root: str) -> int:
+    """Recursively count image files (IMAGE_EXTENSIONS) under root."""
+    count = 0
+    for _dirpath, _dirs, filenames in os.walk(root):
+        count += sum(1 for f in filenames if f.lower().endswith(IMAGE_EXTENSIONS))
+    return count
+
+
+def _wait_for_select_folder_dialog(title: str, timeout: int = 10):
+    """Wait for a folder/file browse dialog using FindWindowW (bypasses UIA traversal issues)."""
+    for _ in range(timeout * 2):
+        time.sleep(0.5)
+        hwnd = ctypes.windll.user32.FindWindowW(None, title)
+        if hwnd:
+            try:
+                return Desktop(backend="uia").window(handle=hwnd)
+            except Exception:
+                pass
+    return None
+
+
+def _send_path_to_browse_dialog(file_dlg, path):
+    """Set path in a file dialog Edit control via WM_SETTEXT.
+    Handles both BrowseForFolder (direct Edit child) and standard Open dialogs
+    (Edit nested inside ComboBoxEx32 → ComboBox → Edit)."""
+    WM_SETTEXT = 0x000C
+    hwnd = file_dlg.handle
+    ctypes.windll.user32.SetForegroundWindow(hwnd)
+    time.sleep(0.4)
+    send_keys("a")  # activates BrowseForFolder's hidden edit box
+    time.sleep(0.4)
+
+    # BrowseForFolder: Edit is a direct child
+    edit_hwnd = ctypes.windll.user32.FindWindowExW(hwnd, None, "Edit", None)
+
+    # Standard Open dialog: Edit is nested inside ComboBoxEx32 → ComboBox → Edit
+    if not edit_hwnd:
+        combo_ex = ctypes.windll.user32.FindWindowExW(hwnd, None, "ComboBoxEx32", None)
+        if combo_ex:
+            combo = ctypes.windll.user32.FindWindowExW(combo_ex, None, "ComboBox", None)
+            if combo:
+                edit_hwnd = ctypes.windll.user32.FindWindowExW(combo, None, "Edit", None)
+
+    if edit_hwnd:
+        ctypes.windll.user32.SendMessageW(edit_hwnd, WM_SETTEXT, 0, path)
+    else:
+        send_keys("^a{DEL}")
+        send_keys(path, with_spaces=True, pause=0.1)
+
+
+def _check_dpi_150():
+    """Exit with a popup warning if Windows UI scaling is not set to 150%."""
+    dpi = ctypes.windll.user32.GetDpiForSystem()
+    if dpi != 144:
+        pct = round(dpi / 96 * 100)
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"Windows UI scaling is {pct}% (DPI={dpi}).\nThis script requires 150%. Please adjust in Display Settings and re-run.",
+            "Wrong DPI Scale",
+            0x30  # MB_ICONWARNING | MB_OK
+        )
+        raise SystemExit(1)
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    _logger.info("DPI scaling confirmed at 150%")
+
+
+def _find_pix4d_window(timeout: int = 60):
+    """Wait for PIX4Dmatic main window to appear and return it as a WindowSpecification
+    (not a raw UIAWrapper) so callers can use .child_window() etc."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            wins = Desktop(backend="uia").windows(title="PIX4Dmatic")
+            if wins:
+                hwnd = wins[0].handle
+                app = Application(backend="uia").connect(handle=hwnd)
+                return app.window(handle=hwnd)
+        except Exception:
+            pass
+        time.sleep(1)
+    raise RuntimeError("PIX4Dmatic window did not appear within timeout.")
+
+
+class Pix4DAutomation:
+    """Drives the PIX4Dmatic UI.
+
+    self.win is the pywinauto WindowSpecification for the PIX4Dmatic main window.
+    It's resolved once in launch() and then reused by every step method — both as
+    the root for child_window() anchor lookups and, in bring_to_front(), for its
+    .handle — so it doesn't need to be re-found or passed around as an argument.
+    self.proc is the Popen handle if this instance launched PIX4Dmatic itself
+    (None if it attached to an already-running instance), used by dev-mode's
+    'q' kill switch.
+    """
+
+    # Step number -> method name. Run one in isolation with:
+    #   python AutomatePix4D.py --dev --step 6
+    # (--dev also enables the 'q' kill switch). Omit --step to run every
+    # step in order via run_all(). To add a step, just add an entry here
+    # and define the matching method — run_step()/run_all() dispatch to it
+    # automatically via getattr(self, name)().
+    STEPS = {
+        2: "click_select_folder",
+        3: "select_ppk_folder_path",
+        4: "enter_project_name",
+        5: "enter_path_name",
+        6: "enter_epsg",
+        7: "start_import",
+        8: "open_settings",
+        9: "open_templates",
+        10: "fix_camera",
+        11: "insert_targets",
+        12: "start_processing",
+    }
+
+    def __init__(self):
+        self.win = None
+        self.proc = None
+
+    def launch(self):
+        """Step 1 — Launch PIX4Dmatic if it isn't already running."""
+        try:
+            self.win = _find_pix4d_window(timeout=3)
+            _logger.info("PIX4Dmatic already running — skipping launch.")
+            return
+        except RuntimeError:
+            pass
+
+        _logger.info("Launching PIX4Dmatic...")
+        self.proc = subprocess.Popen([PIX4D_EXE])
+        _logger.info("Waiting for PIX4Dmatic window...")
+        self.win = _find_pix4d_window(timeout=60)
+        _logger.info("PIX4Dmatic window found.")
+
+    def bring_to_front(self):
+        """Restore and focus PIX4Dmatic. Uses the window's HWND directly so we never
+        accidentally target a background subwindow via pywinauto handle resolution."""
+        SW_RESTORE  = 9
+        SW_MAXIMIZE = 3
+
+        hwnd = self.win.handle
+        _logger.info(f"PIX4Dmatic HWND: {hwnd}")
+
+        ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+        time.sleep(0.5)
+        ctypes.windll.user32.ShowWindow(hwnd, SW_MAXIMIZE)
+        time.sleep(0.3)
+
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        fg_tid  = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
+        my_tid  = ctypes.windll.kernel32.GetCurrentThreadId()
+        tgt_tid = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+        if fg_tid != my_tid:
+            ctypes.windll.user32.AttachThreadInput(my_tid, fg_tid, True)
+        ctypes.windll.user32.AttachThreadInput(tgt_tid, fg_tid, True)
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+        ctypes.windll.user32.BringWindowToTop(hwnd)
+        ctypes.windll.user32.AttachThreadInput(tgt_tid, fg_tid, False)
+        if fg_tid != my_tid:
+            ctypes.windll.user32.AttachThreadInput(my_tid, fg_tid, False)
+        time.sleep(0.5)
+        _logger.info("PIX4Dmatic brought to front")
+
+    def _click_offset_from_anchor(self, anchor_title, anchor_control_type, dx, dy, timeout=30):
+        """Click at a (dx, dy) pixel offset from the center of an anchor element.
+        Use this when the real target isn't in the UIA tree (e.g. hover-only or
+        non-traversable controls) but a nearby stable element is."""
+        caller = inspect.currentframe().f_back
+        origin = f"{os.path.basename(caller.f_code.co_filename)}:{caller.f_lineno}"
+
+        _logger.info(f"[{origin}] Looking for '{anchor_title}' anchor...")
+        anchor = self.win.child_window(title=anchor_title, control_type=anchor_control_type)
+        anchor.wait("visible", timeout=timeout)
+        r = anchor.rectangle()
+        cx = (r.left + r.right) // 2
+        cy = (r.top + r.bottom) // 2
+        target = (cx + dx, cy + dy)
+        mouse.click(coords=target)
+        _logger.info(f"[{origin}] Clicked {target} (offset from '{anchor_title}')")
+        return target
+
+    def _button_push(self, button_title, button_control_type="Button"):
+        """Click the 'Apply' button."""
+        apply_btn = self.win.child_window(title=button_title, control_type="Button")
+        apply_btn.wait("visible", timeout=10)
+        apply_btn.click_input()
+
+    def _click_screen_edge(self, anchor_title, anchor_control_type, dy, side="left", dx=0, margin=10, timeout=30):
+        """Click near a fixed screen edge or the screen's horizontal center
+        (not an anchor-relative x) at the anchor's vertical position + dy.
+        `side` picks "left", "right", or "center"; dx shifts from that base
+        point (positive = toward screen center on "left"/"right", toward the
+        right edge on "center"). Use this instead of _click_offset_from_anchor
+        when the target always sits at a fixed screen position regardless of
+        window position."""
+        if side not in ("left", "right", "center"):
+            raise ValueError(f"side must be 'left', 'right', or 'center', got {side!r}")
+
+        caller = inspect.currentframe().f_back
+        origin = f"{os.path.basename(caller.f_code.co_filename)}:{caller.f_lineno}"
+
+        _logger.info(f"[{origin}] Looking for '{anchor_title}' anchor...")
+        anchor = self.win.child_window(title=anchor_title, control_type=anchor_control_type)
+        anchor.wait("visible", timeout=timeout)
+        r = anchor.rectangle()
+        cy = (r.top + r.bottom) // 2
+
+        screen_width = ctypes.windll.user32.GetSystemMetrics(0)  # SM_CXSCREEN
+        if side == "left":
+            x = margin + dx
+        elif side == "right":
+            x = screen_width - margin - dx
+        else:  # center
+            x = screen_width // 2 + dx
+
+        target = (x, cy + dy)
+        mouse.click(coords=target)
+        _logger.info(f"[{origin}] Clicked {target} (screen-{side}, offset from '{anchor_title}')")
+        return target
+
+    def _read_focused_value(self):
+        """Read the text value of whatever control currently has UIA focus, via its
+        ValuePattern. Returns None if the focused element doesn't expose one."""
+        from pywinauto.uia_defines import IUIA, NoPatternInterfaceError
+        from pywinauto.uia_element_info import UIAElementInfo
+        from pywinauto.controls.uiawrapper import UIAWrapper
+
+        raw_elem = IUIA().get_focused_element()
+        focused = UIAWrapper(UIAElementInfo(raw_elem))
+        try:
+            return focused.iface_value.CurrentValue
+        except NoPatternInterfaceError:
+            return None
+
+    def _tab(self, count: int = 1):
+        """Press Tab `count` times to move focus, then log what ended up
+        focused (via UIA read-back) so hop counts can be sanity-checked/tuned
+        instead of clicking at hardcoded pixel offsets."""
+        send_keys("{TAB}" * count)
+        time.sleep(0.2)
+        _logger.info(f"Tabbed x{count} -> focused value: {self._read_focused_value()!r}")
+
+    @staticmethod
+    def _set_clipboard_text(text: str):
+        """Put `text` on the Windows clipboard as CF_UNICODETEXT.
+
+        GlobalAlloc/GlobalLock return pointers — restype must be set to
+        c_void_p or ctypes truncates them to 32-bit on 64-bit Python, which
+        silently corrupts the handle and makes the whole write a no-op.
+        """
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+
+        data = text.encode("utf-16-le") + b"\x00\x00"
+        h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not h_mem:
+            _logger.warning("GlobalAlloc failed — clipboard text not set.")
+            return
+        ptr = kernel32.GlobalLock(h_mem)
+        if not ptr:
+            _logger.warning("GlobalLock failed — clipboard text not set.")
+            return
+        ctypes.memmove(ptr, data, len(data))
+        kernel32.GlobalUnlock(h_mem)
+
+        if not user32.OpenClipboard(0):
+            _logger.warning("OpenClipboard failed — clipboard text not set.")
+            return
+        try:
+            user32.EmptyClipboard()
+            if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                _logger.warning("SetClipboardData failed — clipboard text not set.")
+        finally:
+            user32.CloseClipboard()
+
+    def _enter_text(self, text: str, paste: bool = False):
+        """Put `text` into whatever field currently has focus — either by
+        typing via send_keys, or (paste=True) by putting it on the clipboard
+        and pasting with Ctrl+V."""
+        if paste:
+            self._set_clipboard_text(text)
+            send_keys("^v")
+        else:
+            send_keys(text, with_spaces=True)
+
+    def _type_and_verify(self, text, field_label, on_failure=None, paste=False):
+        """Enter `text` into whatever field currently has focus (relies on the
+        field auto-highlighting its existing text on click, same as before),
+        then read the focused control's value back via UIA and log whether it
+        matches. If verification fails: delete what was typed, optionally run
+        `on_failure` (e.g. to fix up UI state first), then retry once.
+        paste=True enters the text via clipboard copy/paste instead of typing."""
+        self._enter_text(text, paste=paste)
+        time.sleep(0.2)
+        actual = self._read_focused_value()
+        if actual == text:
+            _logger.info(f"Verified '{field_label}' = '{text}'")
+            return True
+
+        _logger.warning(f"Could not verify '{field_label}': expected '{text}', read back {actual!r}")
+        send_keys(f"{{BACKSPACE {len(text)}}}")  # delete exactly what we just typed, not the whole field
+
+        if on_failure is not None:
+            on_failure()
+            time.sleep(0.5)  # let the recovery click (e.g. checkbox) land before retyping
+
+        self._enter_text(text, paste=paste)
+        time.sleep(0.2)
+        actual = self._read_focused_value()
+        if actual == text:
+            _logger.info(f"Verified '{field_label}' = '{text}' after retry")
+            return True
+        _logger.warning(f"Still could not verify '{field_label}' after retry: expected '{text}', read back {actual!r}")
+        return False
+
+    def click_select_folder(self, max_attempts: int = 5):
+        """Step 2 — Click the 'Select folder...' button.
+        Not present in the UIA tree until the mouse hovers over it, so we anchor off the
+        'Start trial' button instead (measured: anchor (3552,91) -> target center (770,616)).
+        The click itself is blind (offset from an anchor, not the real element), so it can
+        miss — keep re-clicking until the 'Select Folder' browse dialog actually appears
+        (the same check step 3 relies on) instead of assuming one click landed."""
+        target = None
+        for attempt in range(1, max_attempts + 1):
+            target = self._click_offset_from_anchor("PIX4Dcloud", "Button", dx=-2900, dy=525)
+            _logger.info(f"'Select folder...' clicked (attempt {attempt}/{max_attempts}).")
+            if _wait_for_select_folder_dialog("Select Folder", timeout=3) is not None:
+                return target
+            _logger.warning(f"'Select Folder' dialog not detected after attempt {attempt} — retrying click.")
+        _logger.warning(f"'Select Folder' dialog still not detected after {max_attempts} attempts.")
+        return target
+
+    def select_ppk_folder_path(self):
+        """Step 3 — Enter the PPK project folder path into the browse dialog.
+        Same append behavior as enter_path_name: <PROJECT_ROOT>\\PPK, no separate
+        PPK path variable needed."""
+        ppk_path = str(Path(PROJECT_ROOT) / "PPK")
+        _logger.info("Waiting for folder browse dialog...")
+        file_dlg = _wait_for_select_folder_dialog("Select Folder")
+        if file_dlg is None:
+            raise RuntimeError("'Select Folder' dialog did not appear within 10s")
+
+        _send_path_to_browse_dialog(file_dlg, ppk_path)
+        send_keys("{ENTER}")
+
+        btn = file_dlg.child_window(title="Select Folder", control_type="Button")
+        btn.wait("enabled", timeout=5)
+        btn.click_input()
+        _logger.info(f"Set PPK folder path '{ppk_path}'")
+
+    def enter_project_name(self):
+        """Step 4 — Click the Project name field (edit box not in UIA tree — offset
+        from the 'Project name' label, 25px down and 1px right) and type PROJECT_NAME,
+        then verify it landed via UIA read-back."""
+        self._click_offset_from_anchor("Project name", "Text", dx=8, dy=1)
+        self._type_and_verify(PROJECT_NAME, "Project name")
+
+    def enter_path_name(self):
+        """Step 5 — Click the Path field (offset from the 'Path' label, same as
+        Project name) and type <PROJECT_ROOT>\\Pix4D, then verify it landed via
+        UIA read-back. Data intake already creates that 'Pix4D' subfolder under
+        the project root."""
+        pix4d_path = str(Path(PROJECT_ROOT) / "Pix4D")
+        self._click_offset_from_anchor("Path", "Text", dx=8, dy=28)
+        self._type_and_verify(pix4d_path, "Path")
+
+    def _enter_epsg_fields(self):
+        """EPSG horizontal + vertical entry. Extracted out of enter_epsg so it
+        can be run twice — this search-combo UI is flaky enough that a single
+        pass sometimes doesn't take."""
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=85)
+        time.sleep(0.5)
+        self._type_and_verify(EPSG_CODE_H, "EPSG", paste=True)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=145)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Geoid", "Text", dx=0, dy=-85)
+        time.sleep(0.5)
+        self._enter_text(EPSG_CODE_V)  # typed, not pasted — this search combo only
+        # filters/opens its dropdown on individual keystrokes; a bulk Ctrl+V paste
+        # delivers the whole string in one shot and the dropdown just closes on it
+        time.sleep(1)
+
+    def _enter_epsg_fieldsactual(self, click_default_crs):
+        """EPSG horizontal + vertical entry. Extracted out of enter_epsg so it
+        can be run twice — this search-combo UI is flaky enough that a single
+        pass sometimes doesn't take."""
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=85)
+        time.sleep(0.5)
+        self._type_and_verify(EPSG_CODE_H, "EPSG", paste=True)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=145)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Geoid", "Text", dx=0, dy=-85)
+        time.sleep(0.5)
+        self._enter_text(EPSG_CODE_V)  # typed, not pasted — this search combo only
+        # filters/opens its dropdown on individual keystrokes; a bulk Ctrl+V paste
+        # delivers the whole string in one shot and the dropdown just closes on it
+        time.sleep(1)
+        self._click_offset_from_anchor("Geoid", "Text", dx=0, dy=-45)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Geoid", "Text", dx=0, dy=30)
+        self._type_and_verify('GEOID18', "EPSG")
+        self._click_offset_from_anchor("Geoid", "Text", dx=0, dy=75)
+        click_default_crs()
+
+    def enter_epsg(self):
+        """Step 6 — Click the EPSG field (offset from the 'Path' label) and type
+        EPSG_CODE, verifying it landed via UIA read-back. If verification fails,
+        click the 'Default CRS' checkbox (a real UIA element, no anchor offset
+        needed) as a recovery step before retrying the type once."""
+        crs_checkbox_fail = False
+
+        # def _click_default_crs_fail():
+        #     nonlocal crs_checkbox_fail
+        #     crs_checkbox_fail = True
+        #     checkbox = self.win.child_window(title="Default CRS", control_type="CheckBox")
+        #     checkbox.wait("visible", timeout=10)
+        #     checkbox.click_input()
+        #     _logger.info("Clicked 'Default CRS' checkbox with fail.")
+        #     # clicking the checkbox steals focus — re-click the EPSG field so the
+        #     # retype in _type_and_verify lands on the right target, not the checkbox
+        #     self._click_offset_from_anchor("Path", "Text", dx=8, dy=365)
+
+        def _click_default_crs():
+            checkbox = self.win.child_window(title="Default CRS", control_type="CheckBox")
+            checkbox.wait("visible", timeout=10)
+            checkbox.click_input()
+            _logger.info("Clicked 'Default CRS' checkbox.")
+
+        self._click_offset_from_anchor("Path", "Text", dx=8, dy=195)
+        _click_default_crs()
+
+        self._enter_epsg_fields()
+        time.sleep(3)
+        self._enter_epsg_fieldsactual(_click_default_crs)
+
+        
+
+
+
+        if crs_checkbox_fail:
+            _click_default_crs()
+
+        time.sleep(1)
+    
+    def start_import(self):
+        """Step 7 — Click the 'Start import' button (offset from the 'Path' label)."""
+        checkbox = self.win.child_window(title="Start", control_type="Button")
+        checkbox.wait("visible", timeout=10)
+        checkbox.click_input()
+        _logger.info("'Start import' clicked.")
+
+    def open_settings(self):
+        """Step 8 - Click the 'Settings' button (far-left edge of the screen,
+        at the '2D' checkbox's height + offset)."""
+        self._click_screen_edge("2D", "CheckBox", dy=85)
+
+    def open_templates(self):
+        """Step 9 - Click the 'Template' fields. Waits first — sleep duration
+        scales with the number of images in <PROJECT_ROOT>/PPK (count / 250
+        seconds), since more images means PIX4D needs longer before these
+        fields are ready to click."""
+        ppk_folder = Path(PROJECT_ROOT) / "PPK"
+        image_count = _count_images(str(ppk_folder))
+        wait_secs = image_count / 250
+        _logger.info(
+            f"Found {image_count} image(s) in '{ppk_folder}' — waiting {wait_secs:.1f}s before opening templates."
+        )
+        time.sleep(wait_secs)
+
+        self._click_screen_edge("2D", "CheckBox", dy=98, dx=100)
+        self._click_screen_edge("2D", "CheckBox", dy=120, dx=100)
+    
+    def fix_camera(self):
+        """Step 10 - Clicks camera field, and selects ellipsoidal height"""
+        self._click_screen_edge("2D", "CheckBox", dy=1929, side="right", dx=15)
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=190)
+        time.sleep(0.5)
+        self._type_and_verify('ellipsoidal', "Vertical coordinate reference system")
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Known CRS", "RadioButton", dx=0, dy=240)
+        time.sleep(0.5)
+        self._button_push("Apply")
+
+    def insert_targets(self):
+        """Step 11 - Inserts target file path into the camera field. Same
+        browse-dialog prompt sequence as select_ppk_folder_path: click to open
+        the dialog, wait for it, send PROJECT_TAT, confirm."""
+        self._click_screen_edge("2D", "CheckBox", dy=1890, side="center", dx=-40)
+        time.sleep(0.5)
+        self._button_push("Select from disk")
+
+        _logger.info("Waiting for folder browse dialog...")
+        file_dlg = _wait_for_select_folder_dialog("Open")
+        if file_dlg is None:
+            raise RuntimeError("'Select Folder' dialog did not appear within 10s")
+
+        _send_path_to_browse_dialog(file_dlg, PROJECT_TAT)
+        send_keys("{ENTER}")
+        # Enter alone submits and closes this Open dialog (unlike the folder
+        # browser used for PPK) — no separate confirm button to click after.
+        _logger.info(f"Set target path '{PROJECT_TAT}'")
+        time.sleep(0.5)
+        self._click_offset_from_anchor("Column format", "Text", dx=0, dy=50)
+        self._click_offset_from_anchor("Column format", "Text", dx=0, dy=110)
+        self._button_push("Apply")
+        
+
+    def start_processing(self):
+        """Step 12 - Click the 'Start processing' button """
+        self._button_push("Start")
+    # def open_templates(self):
+    #     """Step 10 - Click the 'Settings' button (far-left edge of the screen,
+    #     at the '2D' checkbox's height + offset)."""
+    #     self._click_screen_left("2D", "CheckBox", dy=85)
+
+    def run_step(self, step_num: int):
+        name = self.STEPS[step_num]
+        _logger.info(f"Running only step {step_num} ({name})")
+        getattr(self, name)()
+
+    def run_steps(self, step_nums):
+        for step_num in step_nums:
+            self.run_step(step_num)
+
+    def run_all(self):
+        for step_num in sorted(self.STEPS):
+            getattr(self, self.STEPS[step_num])()
+
+
+def _watch_for_quit(automation: Pix4DAutomation):
+    """Dev mode: press 'q' at any time to kill this script (and PIX4Dmatic)."""
+    while True:
+        if msvcrt.kbhit() and msvcrt.getch().lower() == b"q":
+            _logger.info("'q' pressed — exiting dev session.")
+            if automation.proc is not None and automation.proc.poll() is None:
+                automation.proc.kill()
+            os._exit(0)
+        time.sleep(0.1)
+
+
+def main():
+    dev_mode = "--dev" in sys.argv
+
+    only_steps = None
+    if "--step" in sys.argv:
+        raw = sys.argv[sys.argv.index("--step") + 1]
+        parts = raw.split(",")
+        if not all(p.isdigit() and int(p) in Pix4DAutomation.STEPS for p in parts):
+            valid = ", ".join(f"{n} ({name})" for n, name in sorted(Pix4DAutomation.STEPS.items()))
+            raise SystemExit(f"--step must be a comma-separated list of: {valid}")
+        only_steps = [int(p) for p in parts]
+        names = ", ".join(f"{n} ({Pix4DAutomation.STEPS[n]})" for n in only_steps)
+        print(f"[--step] Running only step(s): {names}")
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+    automation = Pix4DAutomation()
+    if dev_mode:
+        _logger.info("Dev mode enabled — press 'q' at any time to quit.")
+        threading.Thread(target=_watch_for_quit, args=(automation,), daemon=True).start()
+
+    _check_dpi_150()
+    automation.launch()
+    automation.bring_to_front()
+    time.sleep(2)
+
+    if only_steps is not None:
+        automation.run_steps(only_steps)
+    else:
+        automation.run_all()
+
+
+if __name__ == "__main__":
+    main()
