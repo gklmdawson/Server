@@ -73,7 +73,7 @@ def test_nonzero_exit_fails_with_bundle(env):
     assert args[2] == "NONZERO_EXIT"
     bundle = args[4]
     assert bundle and (ctx.work_dir / "failure" / "job.json").exists()
-    assert (ctx.work_dir / "failure" / "payload_log_tail.txt").exists()
+    assert (ctx.work_dir / "failure" / "payload_tail.txt").exists()
     assert not cfg.state_file.exists()
 
 

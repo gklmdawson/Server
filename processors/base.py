@@ -35,6 +35,8 @@ class JobContext:
     max_runtime_seconds: float = 24 * 3600.0
     pid: Optional[int] = None
     exit_code: Optional[int] = None     # None when unknown (recovered orphan)
+    started_wall: Optional[float] = None  # time.time() at launch (validators
+                                          # use it for output-freshness checks)
 
 
 @dataclass

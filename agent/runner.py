@@ -243,9 +243,9 @@ class JobRunner:
                 "exit_code": ctx.exit_code, "pid": ctx.pid,
                 "captured_at": utcnow_iso(), "agent_version": AGENT_VERSION,
             })
-            if ctx.log_path.is_file():
-                tail = ctx.log_path.read_text(encoding="utf-8", errors="replace")[-64_000:]
-                (bundle / "payload_log_tail.txt").write_text(tail, encoding="utf-8")
+            for log in sorted(ctx.work_dir.glob("*.log")):
+                tail = log.read_text(encoding="utf-8", errors="replace")[-64_000:]
+                (bundle / f"{log.stem}_tail.txt").write_text(tail, encoding="utf-8")
             capture_screenshot(bundle / "screenshot.png")
             return str(bundle)
         except Exception as exc:
@@ -315,6 +315,7 @@ class JobRunner:
                 return
 
             ctx.pid = proc.pid
+            ctx.started_wall = time.time()
             try:
                 create_time = psutil.Process(proc.pid).create_time()
             except psutil.NoSuchProcess:
@@ -462,6 +463,10 @@ class JobRunner:
                                  state.get("parameters") or {},
                                  float(state.get("max_runtime_minutes") or 1440))
         ctx.pid = state.get("pid")
+        try:
+            ctx.started_wall = datetime.fromisoformat(state["started_at"]).timestamp()
+        except (KeyError, ValueError):
+            ctx.started_wall = None
 
         if processor is None:
             self._send_with_retry("failed", lambda: self.client.report_failed(

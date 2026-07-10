@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from processors.base import Processor, ProcessorError, Validation
 from processors.mock import MockProcessor
+from processors.terra_lidar import TerraLidarProcessor
+from processors.terra_ppk import TerraPpkProcessor
 
 ALL_PROCESSORS: list[type[Processor]] = [
     MockProcessor,
-    # Phase 3+: TerraPpkProcessor, TerraLidarProcessor, Pix4dMaticProcessor,
-    #           CycloneClassifyProcessor
+    TerraPpkProcessor,
+    TerraLidarProcessor,
+    # Phase 4/5: Pix4dMaticProcessor, CycloneClassifyProcessor
 ]
 
 
