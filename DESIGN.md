@@ -1,10 +1,43 @@
-# Job Queue Server — Design (v2.1 — converged)
+# Job Queue Server — Design (v2.1 — converged; v3 addendum below)
 
 **Repo:** `gklmdawson/Server` · **Branch:** `claude/job-queue-server-design-0rvfqg`
 **Status:** implemented through Phase 5 code (coordinator, agent, all four
 processors, intake client — 80 tests). Remaining: on-machine deployment and
 calibration (see README "On-machine work remaining") and the Phase 6 GUI
 cutover. Watch items in §12.
+
+---
+
+## v3 redesign addendum (2026-07-16, branch `claude/architecture-redesign-3x5gvh`)
+
+The v2 queue core below is unchanged — v3 rebuilds the *human half* around
+one rule: **browser for every human, Python for every machine.**
+
+1. **React web UI** (`web/`, Vite) served by the coordinator replaces the
+   Jinja dashboard and, once trusted, the PyQt5 intake GUI: dashboard,
+   project pages, machine controls, and the submit form live at one URL.
+   The legacy single-file dashboard remains as a fallback when `web/dist`
+   isn't built (PyInstaller EXE without Node still works).
+2. **Intake is a job.** New `INTAKE` job type + processor port of
+   `ProcessingWorker` (folder tree → resumable copy → base data → Trimble
+   RINEX → obs distribution). `POST /api/v1/intake` turns one form into the
+   whole job graph server-side (`coordinator/intake.py` owns the §8
+   parameter contract); chains gate on the INTAKE job via `depends_on`.
+3. **Machines are reconfigurable from the dashboard.** The agent declares
+   what a box CAN run; a new coordinator-side policy
+   (`enabled_capabilities`, Machines tab toggles) controls what it MAY run:
+   effective = declared ∩ enabled. Adding a second Terra box is an agent
+   install + token — routing by capability already handles the rest.
+4. **Coordinator hosting moves to Docker on the UGREEN DXP4800 Plus**
+   (`Dockerfile` + `docker-compose.yml`; SQLite on the NAS volume accessed
+   locally — not over SMB). The Windows EXE remains a supported fallback.
+5. **Fix:** request DB commits now happen in middleware BEFORE the response
+   is sent (FastAPI yield-teardown commits land after it), closing a race
+   where a fast agent's `started` report could read pre-commit state and
+   get a spurious 409.
+
+Deployment runbook: **DEPLOY.md**. Retirement of `data_intake.py` happens
+only after supervised parallel running of the web intake.
 
 This is the ChatGPT build spec ("Data Intake Distributed Processing System") reviewed
 against the actual code (`data_intake.py`, `classify_3dr.py`, the three automation

@@ -32,13 +32,20 @@ from coordinator.assign import (
 )
 from coordinator.config import CoordinatorConfig
 from coordinator.db import Job, JobEvent, Node, Project, iso_z, log_event, utcnow
+from coordinator.intake import (
+    SENSORS as INTAKE_SENSORS,
+    IntakeValidationError,
+    build_job_specs,
+)
 from shared.schemas import (
     CancelledReport,
     EventType,
     FailedReport,
+    IntakeSubmit,
     JobAssignment,
     JobCreate,
     JobStatus,
+    NodeCapabilityUpdate,
     NodeCreate,
     ProgressReport,
     ProjectCreate,
@@ -63,16 +70,17 @@ def get_cfg(request: Request) -> CoordinatorConfig:
     return request.app.state.cfg
 
 
-def get_session(request: Request):
-    session: Session = request.app.state.session_factory()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def get_session(request: Request) -> Session:
+    """Request-scoped session, committed by the middleware in main.py BEFORE
+    the response reaches the client. (A yield-dependency commit runs after
+    the response is sent on current FastAPI/Starlette — an agent reacting
+    immediately to a sync assignment could then read the pre-commit state
+    and get a bogus 409.)"""
+    session = getattr(request.state, "db_session", None)
+    if session is None:
+        session = request.app.state.session_factory()
+        request.state.db_session = session
+    return session
 
 
 def _bearer(request: Request) -> str:
@@ -442,6 +450,57 @@ def create_project(body: ProjectCreate, request: Request,
     }
 
 
+@router.post("/intake", status_code=201)
+def submit_intake(body: IntakeSubmit, request: Request,
+                  session: Session = Depends(get_session),
+                  cfg: CoordinatorConfig = Depends(get_cfg),
+                  _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """One web-form submission -> project + INTAKE job + selected chains,
+    with all job parameters built server-side (coordinator/intake.py)."""
+    try:
+        specs = build_job_specs(body)
+    except IntakeValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    project = Project(
+        name=body.project.strip(), client=body.client.strip(),
+        sensor_type=body.sensor_type, root_path=body.root_path.strip(),
+        date_folder=body.date.strip(), priority=body.priority,
+        metadata_json={"submitted_by": "web_intake", "date": body.date.strip(),
+                       "epsg_h": body.epsg_h, "epsg_v": body.epsg_v},
+        created_at=utcnow(),
+    )
+    session.add(project)
+    session.flush()
+
+    created: list[Job] = []
+    for spec in specs:
+        job = _create_job_row(
+            session, cfg,
+            job_type=spec["job_type"], project=project,
+            parameters=spec["parameters"],
+            depends_on=[created[i].uuid for i in spec["depends_on"]],
+            priority=None, max_runtime_minutes=None,
+        )
+        created.append(job)
+
+    return {
+        "project_uuid": project.uuid,
+        "name": project.name,
+        "jobs": [
+            {"job_uuid": j.uuid, "job_type": j.job_type, "depends_on": j.depends_on_json}
+            for j in created
+        ],
+    }
+
+
+@router.get("/intake/options")
+def intake_options(request: Request,
+                   cfg: CoordinatorConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Form-population data: valid sensors and shop defaults from config."""
+    return {"sensors": list(INTAKE_SENSORS), "defaults": cfg.intake_defaults or {}}
+
+
 @router.post("/jobs", status_code=201)
 def create_job(body: JobCreate, request: Request,
                session: Session = Depends(get_session),
@@ -645,6 +704,8 @@ def _node_summary(node: Node, cfg: CoordinatorConfig, now) -> dict[str, Any]:
         "draining": node.draining,
         "accepting_jobs": node.accepting_jobs,
         "capabilities": node.capabilities_json or [],
+        "enabled_capabilities": node.enabled_capabilities_json,
+        "effective_capabilities": node.effective_capabilities(),
         "agent_version": node.agent_version,
         "computer_name": node.computer_name,
         "current_user": node.current_user,
@@ -694,6 +755,24 @@ def drain_node(node_name: str, request: Request,
                _admin: None = Depends(require_admin)) -> dict[str, Any]:
     node = _set_node_flags(session, node_name, draining=True)
     return {"ok": True, "node_name": node.node_name, "draining": True}
+
+
+@router.post("/nodes/{node_name}/capabilities")
+def set_node_capabilities(node_name: str, body: NodeCapabilityUpdate, request: Request,
+                          session: Session = Depends(get_session),
+                          _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Set the coordinator-side capability policy for a node (what may be
+    assigned). The agent keeps declaring what the machine *can* run; this
+    restricts assignment to declared ∩ enabled. enabled=null clears it."""
+    node = _set_node_flags(session, node_name,
+                           enabled_capabilities_json=body.enabled)
+    return {
+        "ok": True,
+        "node_name": node.node_name,
+        "capabilities": node.capabilities_json or [],
+        "enabled_capabilities": node.enabled_capabilities_json,
+        "effective_capabilities": node.effective_capabilities(),
+    }
 
 
 # ---------------------------------------------------------------------------

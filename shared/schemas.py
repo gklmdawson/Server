@@ -40,6 +40,7 @@ class ProjectStatus(str, Enum):
 
 
 # Known job types (informational — the coordinator accepts any string).
+INTAKE = "INTAKE"
 TERRA_PPK = "TERRA_PPK"
 TERRA_LIDAR = "TERRA_LIDAR"
 PIX4D_MATIC = "PIX4D_MATIC"
@@ -171,6 +172,33 @@ class ProjectCreate(BaseModel):
     chains: list[ChainSpec] = Field(default_factory=list)
 
 
+class IntakeSubmit(BaseModel):
+    """One flight's intake, submitted from the web form.
+
+    Creates the project, one INTAKE job (copy + RINEX on the intake machine),
+    and the selected processing chains gated on it. Paths must be visible to
+    the agents (UNC or a share mapped identically on every machine).
+    """
+    root_path: str                       # projects root, e.g. Z:/Survey/Projects
+    client: str
+    project: str
+    date: str                            # ddMonYYYY, e.g. 10Jul2026
+    sensor_type: str                     # M3E | P1 | L2 | L3 | R3Pro | R3ProMobile
+    source_folders: list[str]
+    base_data_paths: list[str] = Field(default_factory=list)
+    base_data_is_rinex: bool = False
+    base_ecef_xyz: Optional[list[float]] = None      # corrected base position
+
+    run_photo_chain: bool = False        # TERRA_PPK -> PIX4D_MATIC
+    run_lidar_chain: bool = False        # TERRA_LIDAR -> CYCLONE_CLASSIFY
+    gcp_path: str = ""                   # targets csv: LiDAR GCP / Pix4D TAT
+    epsg_h: str = ""
+    epsg_v: str = ""
+    no_targets: bool = False
+    classify_model: str = ""             # empty -> skip the Cyclone step
+    priority: int = 100
+
+
 class JobCreate(BaseModel):
     job_type: str
     project_uuid: Optional[str] = None
@@ -184,3 +212,14 @@ class JobCreate(BaseModel):
 class NodeCreate(BaseModel):
     node_name: str
     capabilities: list[str] = Field(default_factory=list)
+
+
+class NodeCapabilityUpdate(BaseModel):
+    """Coordinator-side capability policy for a node.
+
+    `enabled=None` clears the restriction (everything the agent declares is
+    allowed); a list restricts assignment to declared ∩ enabled. Job types the
+    node doesn't declare may be included — they simply have no effect until an
+    agent on that machine declares them.
+    """
+    enabled: Optional[list[str]] = None

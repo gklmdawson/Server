@@ -59,6 +59,12 @@ class CoordinatorConfig:
 
     templates: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: dict(DEFAULT_TEMPLATES))
 
+    # Defaults shown by the web intake form (GET /api/v1/intake/options):
+    # e.g. {root_path: "Z:/Survey/Projects", classify_models: ["…"],
+    #       epsg_h: "6341", epsg_v: "8228"}. Free-form — the form reads what
+    #       it knows and ignores the rest.
+    intake_defaults: dict[str, Any] = field(default_factory=dict)
+
     log_level: str = "INFO"
 
     @classmethod
@@ -72,9 +78,20 @@ class CoordinatorConfig:
         return cfg
 
     def apply_env(self) -> None:
+        """Environment overrides (set by Docker; win over the YAML so the DB
+        always lands on the container volume)."""
         env_admin = os.environ.get("DATA_INTAKE_ADMIN_TOKEN")
         if env_admin:
             self.admin_token = env_admin
+        env_db = os.environ.get("DATA_INTAKE_DB_PATH")
+        if env_db:
+            self.db_path = env_db
+        env_host = os.environ.get("DATA_INTAKE_HOST")
+        if env_host:
+            self.host = env_host
+        env_port = os.environ.get("DATA_INTAKE_PORT")
+        if env_port:
+            self.port = int(env_port)
 
     def max_runtime_for(self, job_type: str) -> int:
         return int(self.job_max_runtime_minutes.get(job_type, self.default_max_runtime_minutes))

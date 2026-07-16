@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from processors.base import Processor, ProcessorError, Validation
 from processors.cyclone_classify import CycloneClassifyProcessor
+from processors.intake import IntakeProcessor
 from processors.mock import MockProcessor
 from processors.pix4dmatic import Pix4dMaticProcessor
 from processors.terra_lidar import TerraLidarProcessor
@@ -16,6 +17,7 @@ from processors.terra_ppk import TerraPpkProcessor
 
 ALL_PROCESSORS: list[type[Processor]] = [
     MockProcessor,
+    IntakeProcessor,
     TerraPpkProcessor,
     TerraLidarProcessor,
     Pix4dMaticProcessor,

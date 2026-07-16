@@ -29,10 +29,19 @@ poll_busy_seconds: 30
 # Per-job-type runtime caps (minutes); the agent kills the payload past this.
 default_max_runtime_minutes: 1440
 job_max_runtime_minutes:
+  INTAKE: 720
   TERRA_PPK: 720
   TERRA_LIDAR: 2880
   PIX4D_MATIC: 2880
   CYCLONE_CLASSIFY: 1440
+
+# Defaults the web intake form pre-fills (GET /api/v1/intake/options).
+intake_defaults:
+  root_path: Z:/Survey/Projects
+  epsg_h: ""
+  epsg_v: ""
+  classify_models:
+    - Heavy Construction UAV 2.0
 
 # Workflow chain templates instantiated by POST /api/v1/projects.
 templates:

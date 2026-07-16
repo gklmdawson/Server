@@ -116,6 +116,11 @@ class Node(Base):
     node_name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
     capabilities_json: Mapped[list] = mapped_column(JSON, default=list)
+    # Dashboard-managed policy: which of the node's declared capabilities may
+    # actually be assigned. NULL = no restriction (everything declared is
+    # allowed). The agent owns *declared* (what's installed on the machine);
+    # this column owns *allowed* (what the coordinator may route to it).
+    enabled_capabilities_json: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=None)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     draining: Mapped[bool] = mapped_column(Boolean, default=False)
     agent_version: Mapped[str] = mapped_column(String(50), default="")
@@ -131,6 +136,14 @@ class Node(Base):
         if self.last_sync_at is None:
             return False
         return (now - self.last_sync_at).total_seconds() < offline_after_seconds
+
+    def effective_capabilities(self) -> list[str]:
+        """Declared ∩ allowed. Order follows the agent's declaration."""
+        declared = list(self.capabilities_json or [])
+        if self.enabled_capabilities_json is None:
+            return declared
+        allowed = set(self.enabled_capabilities_json)
+        return [c for c in declared if c in allowed]
 
 
 class JobEvent(Base):
@@ -175,6 +188,20 @@ def make_session_factory(engine: Engine) -> sessionmaker:
 
 def init_db(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _migrate(engine)
+
+
+def _migrate(engine: Engine) -> None:
+    """Additive column migrations for existing SQLite databases —
+    create_all() only creates missing tables, never missing columns."""
+    if not engine.url.get_backend_name().startswith("sqlite"):
+        return
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(nodes)"))}
+        if "enabled_capabilities_json" not in cols:
+            conn.execute(text(
+                "ALTER TABLE nodes ADD COLUMN enabled_capabilities_json JSON"))
 
 
 def log_event(

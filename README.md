@@ -1,78 +1,94 @@
-# Data Intake Job Queue Server
+# Data Intake — Distributed Processing (v3)
 
-Distributed job queue for geospatial processing workstations: one coordinator
-assigns work to dedicated machines running DJI Terra, Pix4Dmatic, and
-Cyclone 3DR, so each licensed app lives on its own box and runs visibly in the
-logged-in session. Full architecture and phased plan: **[DESIGN.md](DESIGN.md)**.
+One rule: **browser for every human, Python for every machine.**
+
+A single coordinator (Docker container on the UGREEN NAS) runs the job queue,
+the REST API, and the React web app — office staff submit flights and watch
+progress from any browser, with zero installs. One small Python agent EXE runs
+on every Windows machine that does work; **everything is a job**, including
+intake itself (copy + RINEX conversion). The pywinauto payloads that click
+through DJI Terra / Pix4Dmatic are unchanged — they are the irreplaceable core.
+
+```text
+        Office staff (any browser on the LAN — phones included)
+                          │  http://<nas>:8443
+                          ▼
+       COORDINATOR — Docker on the UGREEN DXP4800 Plus
+       FastAPI + SQLite + React UI (queue, submit form, dashboard,
+       per-machine capability toggles)
+                          ▲  outbound HTTP polls (/sync)
+        ┌───────────────┬─┴─────────────┬───────────────┐
+   INTAKE machine   TERRA box(es)   PIX4D box       CYCLONE box
+   agent.exe        agent.exe       agent.exe       agent.exe
+   INTAKE jobs:     DJI Terra via   Pix4Dmatic via  3DR.exe CLI
+   copy + RINEX     pywinauto       pywinauto       --silent
+        └───────────────┴───────────────┴───────────────┘
+                     UGREEN NAS shares (project data)
+```
+
+Machines are interchangeable by **capability**: each agent declares the job
+types its box can run (`agent.yaml`), and the dashboard's Machines tab
+controls what it *may* run right now. Two Terra licenses = two agents
+declaring `TERRA_PPK`/`TERRA_LIDAR`; the queue drains twice as fast, with no
+coordinator changes.
+
+**Install/ops guide: [DEPLOY.md](DEPLOY.md)** · Full architecture &
+history: [DESIGN.md](DESIGN.md)
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `coordinator/` | FastAPI coordinator: SQLite job DB, `/sync` assignment, dashboard |
-| `agent/` | Workstation agent: sync loop, desktop preflight, job runner with watchdog + crash recovery |
-| `processors/` | `terra_ppk`, `terra_lidar` (report.md watch), `pix4dmatic` (log/ortho watch), `cyclone_classify` (resumable 3DR CLI), `mock` |
-| `automation/` | The GUI-automation payload scripts (run as EXEs on workstations) |
+| `coordinator/` | FastAPI coordinator: SQLite job DB, `/sync` assignment, `/intake` submission builder, serves the web UI |
+| `web/` | React (Vite) web app: dashboard, submit form, projects, machine controls |
+| `agent/` | Workstation agent: sync loop, desktop preflight, runner with watchdog + crash recovery |
+| `processors/` | `intake` (copy+RINEX), `terra_ppk`, `terra_lidar`, `pix4dmatic`, `cyclone_classify`, `mock` |
+| `automation/` | GUI-automation payload scripts (run as EXEs on workstations, unchanged) |
 | `shared/` | Enums + API schemas shared by all components |
-| `intake/` | `queue_client.py` — stdlib-only submission client for the Data Intake GUI |
-| `data_intake.py`, `classify_3dr.py` | Current intake GUI (unchanged until Phase 6 cutover) |
-| `scripts/` | `fake_agent.py`, install/update scripts |
-| `build.py` | PyInstaller builds: `terra`, `ppk`, `pix4d`, `agent`, `coordinator` |
+| `Dockerfile`, `docker-compose.yml` | Coordinator container for the NAS (builds the web UI inside) |
+| `scripts/` | `fake_agent.py`, agent install/update PowerShell |
+| `build.py` | PyInstaller builds: `agent`, `coordinator`, `terra`, `ppk`, `pix4d` |
+| `data_intake.py`, `classify_3dr.py` | Legacy PyQt5 intake GUI + 3DR watcher (kept until the web intake is trusted, then retired) |
+| `intake/` | `queue_client.py` — submission client for the legacy GUI's cutover |
 
-## Coordinator quickstart (dev)
+## Dev quickstart
 
 ```bash
 pip install -e ".[coordinator,agent,dev]"
-python -m coordinator.main                # http://127.0.0.1:8443 — dashboard at /
-python -m agent.main --config agent.yaml  # real agent (see config/agent.example.yaml)
+python -m coordinator.main            # http://127.0.0.1:8443
 python scripts/fake_agent.py --node TERRA-01 --capabilities TERRA_PPK,TERRA_LIDAR
-pytest                                     # 80 tests
+pytest                                # 103 tests
+
+# Web UI (only needed when changing it — production builds it in Docker):
+cd web && npm install
+npm run dev                           # http://localhost:5173, proxies /api
+npm run build                         # coordinator serves web/dist automatically
 ```
 
-Create a project with a workflow chain:
+Without `web/dist` the coordinator falls back to a minimal built-in status
+page, so the PyInstaller EXE workflow still works without Node.
 
-```bash
-curl -X POST http://127.0.0.1:8443/api/v1/projects -H "Content-Type: application/json" -d '{
-  "name": "SilverPeak", "client": "Brahma", "sensor_type": "M3E",
-  "chains": [{"template": "photo_ppk", "parameters": {
-    "TERRA_PPK":   {"project_name": "...", "data_source": "...", "ppk_path": "..."},
-    "PIX4D_MATIC": {"project_name": "...", "project_root": "...", "tat_path": "..."}
-  }}]
-}'
-```
+## How work flows
 
-Templates (`photo_ppk`: TERRA_PPK → PIX4D_MATIC; `lidar`: TERRA_LIDAR →
-CYCLONE_CLASSIFY) live in the config; see `config/coordinator.example.yaml`.
+1. **Submit** (browser): client/project/date/sensor, source paths, base data,
+   EPSG, chains. `POST /api/v1/intake` builds the whole job graph server-side
+   (`coordinator/intake.py` — the parameter contract from DESIGN.md §8).
+2. **INTAKE job** runs on whichever machine declares the `INTAKE` capability
+   and can see the source paths: folder tree → resumable copy → base data →
+   Trimble RINEX conversion → obs distribution per sensor type.
+3. **Chains** gate on it: `TERRA_PPK → PIX4D_MATIC` and/or
+   `TERRA_LIDAR → CYCLONE_CLASSIFY`, routed purely by capability.
+4. **Dashboard** shows machines, progress, queue, and an attention panel;
+   retry/cancel/drain and per-machine capability toggles are one click
+   (admin token required — ⚙ in the header).
 
 ## Production notes
 
-* Coordinator runs on the Pix4D machine (192.168.35.67), single worker,
-  SQLite on its **local disk** — never on the NAS.
-* Agents authenticate with per-node bearer tokens: create with
-  `POST /api/v1/nodes` (admin), which returns the token exactly once.
-* Admin/intake calls send `Authorization: Bearer <admin_token>`
-  (`DATA_INTAKE_ADMIN_TOKEN` env var on the coordinator).
-
-## On-machine work remaining (needs the real workstations)
-
-1. Build the EXEs on Windows (`py build.py all`, `py build.py agent`,
-   `py build.py coordinator`) and install: coordinator on the Pix4D box,
-   agents via `scripts/install_agent.ps1`.
-2. Pix4D calibration: confirm Pix4Dmatic's log location + stage/completion
-   strings (job params `completion_log_glob` / `completion_pattern` /
-   `failure_pattern`), confirm the ortho export path (`ortho_glob`), and add
-   the save-project + close-app steps to `automation/AutomatePix4D.py`.
-3. First supervised runs of each chain (`photo_ppk`, `lidar`) end-to-end.
-4. Phase 6 cutover: swap `DJISequenceThread`/`Classify3DRThread` in
-   `data_intake.py` for `intake.queue_client.submit_project()` (the payload
-   builder mirrors `_handle_complete()`'s existing values).
-
-## Payload scripts
-
-The automation scripts in `automation/` still run standalone exactly as
-before (`DJI_PARAMETERS.ini` fallback, dialogs on errors). Under the agent
-they are launched with `--unattended`, which suppresses every dialog so a
-failure can never block: errors go to stderr and the exit code (1 =
-automation error, 2 = wrong DPI/environment). `AutomatePix4D.py` now takes
-`--project-name/--project-root/--epsg-h/--epsg-v/--tat-path` like the Terra
-scripts (`--dev`/`--step` keep the old edit-and-run defaults).
+* Coordinator state is one SQLite file on the NAS volume mount — accessed
+  locally by the container, never over SMB. Back up the `data/` folder.
+* Agents authenticate with per-node bearer tokens (`POST /api/v1/nodes`
+  returns each token exactly once). Set `DATA_INTAKE_ADMIN_TOKEN` for all
+  admin/intake calls.
+* Agents make outbound connections only; one job per machine, structurally.
+* Completion = output validation, never exit codes alone. Failed GUI jobs
+  keep a failure bundle (screenshot + logs) on the workstation for 7 days.

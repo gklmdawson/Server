@@ -1,0 +1,22 @@
+# Data Intake Coordinator on the UGREEN NAS (or any Docker host).
+#
+#   1. Put this repo folder somewhere on the NAS (e.g. /volume1/docker/data-intake)
+#   2. cp .env.example .env   and set DATA_INTAKE_ADMIN_TOKEN
+#   3. docker compose up -d --build
+#
+# The web UI + API are then at http://<nas-ip>:8443 — full steps in DEPLOY.md.
+
+services:
+  coordinator:
+    build: .
+    image: data-intake-coordinator:latest
+    container_name: data-intake-coordinator
+    ports:
+      - "8443:8443"
+    volumes:
+      # SQLite DB + optional coordinator.yaml. This is a path on the NAS's own
+      # filesystem accessed locally by the container — NOT SQLite over SMB.
+      - ./data:/data
+    environment:
+      - DATA_INTAKE_ADMIN_TOKEN=${DATA_INTAKE_ADMIN_TOKEN:?set it in .env}
+    restart: unless-stopped

@@ -68,7 +68,7 @@ def pick_and_claim_next_job(session: Session, node: Node, cfg: CoordinatorConfig
     (higher first) then FIFO. The claim is a conditional UPDATE so a job can
     never be assigned twice even if two syncs race.
     """
-    capabilities = list(node.capabilities_json or [])
+    capabilities = node.effective_capabilities()
     if not capabilities:
         return None
 

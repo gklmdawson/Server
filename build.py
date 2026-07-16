@@ -88,6 +88,15 @@ def build(target: str) -> int:
     if not cfg["script"].exists():
         print(f"[skip] {cfg['script']} does not exist yet — nothing to build for '{target}'")
         return 1
+    extra = list(cfg["extra"])
+    if target == "coordinator":
+        # Bundle the React UI when it has been built (cd web && npm run build);
+        # without it the EXE falls back to the legacy single-file dashboard.
+        webui = SCRIPT_DIR / "web" / "dist"
+        if (webui / "index.html").exists():
+            extra += ["--add-data", str(webui) + ";web/dist"]
+        else:
+            print("[note] web/dist not found — coordinator EXE will use the legacy dashboard")
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
@@ -96,7 +105,7 @@ def build(target: str) -> int:
         "--distpath",  str(SCRIPT_DIR / "dist"),
         "--workpath",  str(SCRIPT_DIR / "build"),
         "--specpath",  str(SCRIPT_DIR),
-        *cfg["extra"],
+        *extra,
         str(cfg["script"]),
     ]
     print(f"\n[build] {cfg['name']}.exe  ←  {cfg['script'].name}")

@@ -18,3 +18,7 @@ venv/
 
 # Local scratch
 *.log
+
+# Web UI
+web/node_modules/
+web/dist/
