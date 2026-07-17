@@ -69,14 +69,15 @@ def date_folder_path(base: str, client: str, project: str, date: str) -> str:
 # Copying
 # ---------------------------------------------------------------------------
 
-def copy_file(source: str, dest: str, buffer_size: int = COPY_BUFFER_SIZE) -> bool:
+def copy_file(source: str, dest: str, buffer_size: int = COPY_BUFFER_SIZE,
+              on_status: StatusFn = _noop) -> bool:
     try:
         with open(source, "rb") as src_f, open(dest, "wb") as dst_f:
             shutil.copyfileobj(src_f, dst_f, length=buffer_size)
         shutil.copystat(source, dest, follow_symlinks=True)
         return True
     except Exception as exc:
-        _noop(f"copy failed {source}: {exc}")
+        on_status(f"COPY FAILED {source}: {exc}")
         return False
 
 
@@ -120,9 +121,14 @@ def copy_tree(
     *,
     on_file: Callable[[str], None] = _noop,
     cancelled: Callable[[], bool] = lambda: False,
+    on_status: StatusFn = _noop,
 ) -> tuple[int, int, Optional[str]]:
     """Copy source_folder into dest_root/<basename(source_folder)>/…,
     mirroring ProcessingWorker._copy_source_data for one source.
+
+    Per-file copy failures are reported through on_status (with the path and
+    the OS error) and do not stop the tree walk — validate_outputs is the
+    final judge of completeness.
 
     Returns (files_copied, files_skipped_as_present, first_image_path).
     """
@@ -149,7 +155,8 @@ def copy_tree(
                 skipped += 1
                 on_file(file)
                 continue
-            if copy_file(source_file, _dedup_dest(target_folder, file)):
+            if copy_file(source_file, _dedup_dest(target_folder, file),
+                         on_status=on_status):
                 copied += 1
                 on_file(file)
     return copied, skipped, first_image
@@ -345,7 +352,8 @@ def copy_base_data(
     for source in valid_sources:
         files = collect_rinex_files(source) if base_data_is_rinex else [source]
         for file_path in files:
-            if copy_file(file_path, os.path.join(target, os.path.basename(file_path))):
+            if copy_file(file_path, os.path.join(target, os.path.basename(file_path)),
+                         on_status=on_status):
                 copied += 1
     if base_data_is_rinex:
         rename_mix_to_nav(target, on_status)

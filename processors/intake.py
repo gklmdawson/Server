@@ -148,11 +148,16 @@ class IntakeProcessor(Processor):
                              f"Copying {_name}: {done['n']}/{total} files")
 
             copied, skipped, image = ops.copy_tree(
-                source, paths["sensor_folder"], on_file=on_file, cancelled=tick)
+                source, paths["sensor_folder"], on_file=on_file, cancelled=tick,
+                on_status=status)
             first_image = first_image or image
-            status(f"{name}: {copied} copied, {skipped} already present")
             if cancelled():
                 return Validation(ok=False, errors=["cancelled"])
+            failed = ops.count_files([source]) - copied - skipped
+            summary = f"{name}: {copied} copied, {skipped} already present"
+            if failed > 0:
+                summary += f", {failed} FAILED (see COPY FAILED events above)"
+            status(summary)
 
         # --- flight-date sanity check (warn only, like the GUI's auto-detect) ---
         exif_date = ops.get_image_date(first_image) if first_image else None
@@ -205,7 +210,8 @@ class IntakeProcessor(Processor):
                 for file_name in os.listdir(base_folder):
                     src = os.path.join(base_folder, file_name)
                     if os.path.isfile(src):
-                        ops.copy_file(src, os.path.join(target, file_name))
+                        ops.copy_file(src, os.path.join(target, file_name),
+                                      on_status=status)
                 status(f"Base set copied to {target}")
             return
 
