@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -499,6 +501,87 @@ def intake_options(request: Request,
                    cfg: CoordinatorConfig = Depends(get_cfg)) -> dict[str, Any]:
     """Form-population data: valid sensors and shop defaults from config."""
     return {"sensors": list(INTAKE_SENSORS), "defaults": cfg.intake_defaults or {}}
+
+
+# ---------------------------------------------------------------------------
+# Server-side file browser (the web form's Browse buttons)
+# ---------------------------------------------------------------------------
+
+MAX_BROWSE_ENTRIES = 5000
+# Dotfiles plus the usual NAS housekeeping folders (@eaDir, #recycle, ~$…).
+BROWSE_SKIP_PREFIXES = (".", "@", "#", "~$")
+
+
+@router.get("/browse")
+def browse(request: Request, root: Optional[str] = None, path: str = "",
+           cfg: CoordinatorConfig = Depends(get_cfg),
+           _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """List a folder under a configured browse root (cfg.browse_roots).
+
+    Without `root`: the configured roots, so the UI knows what to offer.
+    With `root` (+ optional slash-separated relative `path`): the folder's
+    entries, plus the `display_path` (UNC form) the picker writes into job
+    parameters. Browsing never leaves the configured root.
+    """
+    roots = cfg.browse_roots or {}
+    if root is None:
+        return {"roots": [
+            {"label": label, "display": str(spec.get("display") or spec.get("path", ""))}
+            for label, spec in roots.items() if spec.get("path")
+        ]}
+
+    spec = roots.get(root)
+    if not spec or not spec.get("path"):
+        raise HTTPException(status_code=404, detail=f"Unknown browse root '{root}'")
+
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise HTTPException(status_code=400, detail="path may not contain '..'")
+    base = os.path.realpath(str(spec["path"]))
+    target = os.path.realpath(os.path.join(base, *parts))
+    if target != base and not target.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="path escapes the browse root")
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail=f"Not a folder: {'/'.join(parts)}")
+
+    display_root = str(spec.get("display") or spec["path"])
+    if display_root.startswith("/"):
+        sep, display_path = "/", str(PurePosixPath(display_root, *parts))
+    else:
+        sep, display_path = "\\", str(PureWindowsPath(display_root, *parts))
+    # PureWindowsPath keeps a trailing sep on a bare UNC share root
+    # (\\server\share\); drop it so picker joins don't double up. Keep it for
+    # anchors that need it (C:\, /).
+    stripped = display_path.rstrip(sep)
+    if display_path.endswith(sep) and stripped and not stripped.endswith(":"):
+        display_path = stripped
+
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    with os.scandir(target) as it:
+        for entry in it:
+            if entry.name.startswith(BROWSE_SKIP_PREFIXES):
+                continue
+            try:
+                is_dir = entry.is_dir()
+                size = 0 if is_dir else entry.stat().st_size
+            except OSError:
+                continue
+            entries.append({"name": entry.name, "dir": is_dir, "size": size})
+            if len(entries) >= MAX_BROWSE_ENTRIES:
+                truncated = True
+                break
+    entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+
+    return {
+        "root": root,
+        "path": "/".join(parts),
+        "parent": "/".join(parts[:-1]) if parts else None,
+        "display_path": display_path,
+        "sep": sep,
+        "entries": entries,
+        "truncated": truncated,
+    }
 
 
 @router.post("/jobs", status_code=201)

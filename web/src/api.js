@@ -56,6 +56,11 @@ export const api = {
   project: (uuid) => request(`/api/v1/projects/${uuid}`),
   job: (uuid) => request(`/api/v1/jobs/${uuid}`),
   intakeOptions: () => request("/api/v1/intake/options"),
+  browseRoots: () => request("/api/v1/browse"),
+  browse: (root, path = "") =>
+    request(
+      `/api/v1/browse?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`
+    ),
   submitIntake: (body) => request("/api/v1/intake", { method: "POST", body }),
   retryJob: (uuid) => request(`/api/v1/jobs/${uuid}/retry`, { method: "POST" }),
   cancelJob: (uuid) => request(`/api/v1/jobs/${uuid}/cancel`, { method: "POST" }),

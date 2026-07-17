@@ -65,6 +65,17 @@ class CoordinatorConfig:
     #       it knows and ignores the rest.
     intake_defaults: dict[str, Any] = field(default_factory=dict)
 
+    # Server-side file browser for the web form's Browse buttons
+    # (GET /api/v1/browse). Each root: label -> {path, display}. `path` is
+    # where THIS coordinator process sees the share (e.g. the Docker volume
+    # mount); `display` is how agents/jobs address the same location (the UNC
+    # path written into job parameters). Empty = Browse buttons hidden.
+    #   browse_roots:
+    #     3dData:
+    #       path: /mnt/3dData
+    #       display: \\192.168.35.25\3dData
+    browse_roots: dict[str, dict[str, str]] = field(default_factory=dict)
+
     log_level: str = "INFO"
 
     @classmethod

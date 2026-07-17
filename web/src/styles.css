@@ -569,6 +569,133 @@ dialog.settings::backdrop {
   background: rgba(0, 0, 0, 0.35);
 }
 
+/* ---- server-side file picker ---- */
+
+dialog.picker {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 14px;
+  width: min(620px, 94vw);
+}
+
+dialog.picker::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+dialog.picker header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.picker-roots {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.picker-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.picker-crumbs button {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.picker-crumbs button + button::before {
+  content: "\\";
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.picker-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.picker-row:last-child {
+  border-bottom: none;
+}
+
+.picker-row:hover {
+  background: var(--track);
+}
+
+.picker-row.selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+.picker-row .picker-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-row .picker-icon {
+  width: 1.4em;
+  text-align: center;
+}
+
+dialog.picker footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.path-input {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-radius: 8px;
+}
+
+.path-input input,
+.path-input textarea {
+  flex: 1;
+}
+
+.path-input.drag-over input,
+.path-input.drag-over textarea {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.path-input .btn.browse {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.drop-note {
+  color: var(--serious);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 @media (max-width: 720px) {
   .row,
   .row3 {

@@ -43,6 +43,16 @@ intake_defaults:
   classify_models:
     - Heavy Construction UAV 2.0
 
+# Roots the web form's Browse buttons can explore (GET /api/v1/browse).
+# `path` is where the COORDINATOR sees the share (in Docker: a volume mount,
+# see docker-compose.yml); `display` is the same location as agents address
+# it — the picker writes display-form paths into job parameters. Omit or
+# leave empty to hide the Browse buttons.
+browse_roots:
+  3dData:
+    path: /mnt/3dData
+    display: \\192.168.35.25\3dData
+
 # Workflow chain templates instantiated by POST /api/v1/projects.
 templates:
   photo_ppk:

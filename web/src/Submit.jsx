@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api.js";
+import { PathInput, PathLines, normalizePath } from "./FilePicker.jsx";
 import { ErrorBanner } from "./ui.jsx";
 
 // The intake form replaces data_intake.py's GUI: it collects DECISIONS only.
@@ -17,11 +18,12 @@ function todayDate() {
 function splitLines(text) {
   return text
     .split(/\r?\n/)
-    .map((s) => s.trim())
+    .map((s) => normalizePath(s))
     .filter(Boolean);
 }
 
 const LIDAR = ["L2", "L3"];
+const BASE_DATA_EXTS = [".t02", ".t04", ".t0b"];
 
 export default function Submit({ onSubmitted }) {
   const [options, setOptions] = useState({ sensors: [], defaults: {} });
@@ -47,8 +49,13 @@ export default function Submit({ onSubmitted }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
+  const [browseRoots, setBrowseRoots] = useState([]);
 
   useEffect(() => {
+    api
+      .browseRoots()
+      .then((data) => setBrowseRoots(data.roots || []))
+      .catch(() => {});
     api
       .intakeOptions()
       .then((opts) => {
@@ -87,7 +94,7 @@ export default function Submit({ onSubmitted }) {
   const payload = useMemo(() => {
     const ecefParts = splitLines(form.ecef.replaceAll(",", "\n"));
     return {
-      root_path: form.root_path.trim(),
+      root_path: normalizePath(form.root_path),
       client: form.client.trim(),
       project: form.project.trim(),
       date: form.date.trim(),
@@ -98,7 +105,7 @@ export default function Submit({ onSubmitted }) {
       base_ecef_xyz: ecefParts.length === 3 ? ecefParts.map(Number) : null,
       run_photo_chain: form.run_photo_chain,
       run_lidar_chain: isLidar && form.run_lidar_chain,
-      gcp_path: form.gcp_path.trim(),
+      gcp_path: normalizePath(form.gcp_path),
       epsg_h: form.epsg_h.trim(),
       epsg_v: form.epsg_v.trim(),
       no_targets: form.no_targets,
@@ -197,34 +204,40 @@ export default function Submit({ onSubmitted }) {
               </select>
             </div>
           </div>
-          <div className="field">
-            <label>
-              Projects root{" "}
-              <span className="hint">the storage share, e.g. Z:/Survey/Projects</span>
-            </label>
-            <input type="text" required value={form.root_path} onChange={set("root_path")} />
-          </div>
+          <PathInput
+            label="Projects root"
+            hint="the storage share, e.g. \\192.168.35.25\3dData"
+            required
+            value={form.root_path}
+            onChange={(v) => setForm((f) => ({ ...f, root_path: v }))}
+            roots={browseRoots}
+            mode="folder"
+            pickerTitle="Pick the projects root folder"
+          />
         </fieldset>
 
         <fieldset>
           <legend>Data</legend>
-          <div className="field">
-            <label>
-              Source folder(s) — one per line{" "}
-              <span className="hint">
-                must be reachable from the intake machine (ingest share or its
-                local disk)
-              </span>
-            </label>
-            <textarea required value={form.sources} onChange={set("sources")} />
-          </div>
-          <div className="field">
-            <label>
-              Base data file(s) — one per line{" "}
-              <span className="hint">.T02/.T04, or a RINEX obs if already converted</span>
-            </label>
-            <textarea value={form.bases} onChange={set("bases")} />
-          </div>
+          <PathLines
+            label="Source folder(s) — one per line"
+            hint="must be reachable from the intake machine (ingest share or its local disk); drop or paste paths, or Browse"
+            required
+            value={form.sources}
+            onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
+            roots={browseRoots}
+            mode="folder"
+            pickerTitle="Pick source folder(s)"
+          />
+          <PathLines
+            label="Base data file(s) — one per line"
+            hint=".T02/.T04, or a RINEX obs if already converted"
+            value={form.bases}
+            onChange={(v) => setForm((f) => ({ ...f, bases: v }))}
+            roots={browseRoots}
+            mode="file"
+            exts={form.base_data_is_rinex ? null : BASE_DATA_EXTS}
+            pickerTitle="Pick base data file(s)"
+          />
           <label className="check">
             <input
               type="checkbox"
@@ -278,12 +291,16 @@ export default function Submit({ onSubmitted }) {
           </label>
 
           <div className="row3">
-            <div className="field">
-              <label>
-                Targets / GCP csv <span className="hint">TAT file</span>
-              </label>
-              <input type="text" value={form.gcp_path} onChange={set("gcp_path")} />
-            </div>
+            <PathInput
+              label="Targets / GCP csv"
+              hint="TAT file"
+              value={form.gcp_path}
+              onChange={(v) => setForm((f) => ({ ...f, gcp_path: v }))}
+              roots={browseRoots}
+              mode="file"
+              exts={[".csv"]}
+              pickerTitle="Pick the targets / GCP csv"
+            />
             <div className="field">
               <label>EPSG horizontal</label>
               <input type="text" value={form.epsg_h} onChange={set("epsg_h")} />

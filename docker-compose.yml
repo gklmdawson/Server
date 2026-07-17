@@ -17,6 +17,10 @@ services:
       # SQLite DB + optional coordinator.yaml. This is a path on the NAS's own
       # filesystem accessed locally by the container — NOT SQLite over SMB.
       - ./data:/data
+      # Data share for the web form's Browse buttons (read-only — the
+      # coordinator only LISTS it; agents do the writing over SMB). Must
+      # match a browse_roots `path` in coordinator.yaml.
+      - /volume1/3dData:/mnt/3dData:ro
     environment:
       - DATA_INTAKE_ADMIN_TOKEN=${DATA_INTAKE_ADMIN_TOKEN:?set it in .env}
     restart: unless-stopped
