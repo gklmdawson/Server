@@ -17,6 +17,17 @@ from typing import Optional
 
 import psutil
 
+if sys.platform == "win32":
+    # Must happen before any GetDpiForSystem()/GetSystemMetrics() call below —
+    # a DPI-unaware process is virtualized to 96 (100%) by Windows regardless
+    # of the real display scaling. The automation payloads (DJIAutomatePPK.py
+    # etc.) get this for free via pywinauto's import-time side effect; the
+    # agent never imports pywinauto, so it has to declare it itself.
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
 
 def desktop_errors(expected_resolution: list[int], require_dpi_150: bool) -> list[str]:
     """Errors preventing GUI automation right now (empty = good to go)."""
