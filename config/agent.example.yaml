@@ -2,7 +2,7 @@
 # Copy to agent.yaml next to DataIntakeAgent.exe and adjust per machine.
 
 node_name: TERRA-01
-coordinator_url: http://192.168.35.67:8443
+coordinator_url: http://192.168.35.25:8443
 
 # The node's bearer token is read from this environment variable (set for the
 # processing account by scripts/install_agent.ps1). Create the token with:
