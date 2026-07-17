@@ -21,6 +21,7 @@ any) to 'origin' — but only after you confirm at the Y/n prompt. If no
 'origin' remote is configured, the push step is skipped with a message
 telling you to add one.
 """
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +84,27 @@ COMMITS = {
 }
 
 
+def ensure_agent_yaml() -> None:
+    """Make sure config/agent.yaml exists. agent/config.py's load_config()
+    already falls back to this exact path (relative to cwd) with no
+    --config flag needed — see load_config()'s candidate list. Only prompts
+    the first time; once it's there, later builds leave it untouched so
+    per-machine edits survive rebuilds."""
+    dest = SCRIPT_DIR / "config" / "agent.yaml"
+    if dest.exists():
+        print(f"[ok] {dest} already exists — leaving your edits as is")
+        return
+    default_src = SCRIPT_DIR / "config" / "agent.example.yaml"
+    answer = input(f"No config/agent.yaml yet. Path to yaml to use "
+                    f"[{default_src}]: ").strip()
+    src = Path(answer) if answer else default_src
+    if not src.is_file():
+        print(f"[warn] {src} not found — copy a yaml to {dest} manually before running the exe")
+        return
+    shutil.copy(src, dest)
+    print(f"[ok] Copied {src} -> {dest}")
+
+
 def build(target: str) -> int:
     cfg = BUILDS[target]
     if not cfg["script"].exists():
@@ -114,6 +136,8 @@ def build(target: str) -> int:
     if result.returncode == 0:
         out = SCRIPT_DIR / "dist" / (cfg["name"] + ".exe")
         print(f"[ok] Output: {out}")
+        if target == "agent":
+            ensure_agent_yaml()
     else:
         print(f"[error] Build failed (exit {result.returncode})")
     return result.returncode
