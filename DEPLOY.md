@@ -6,20 +6,25 @@ Two things get installed, in this order:
 
 | # | What | Where | How |
 |---|---|---|---|
-| 1 | **Coordinator** — job queue + API + web UI | UGREEN DXP4800 Plus NAS | Docker container |
+| 1 | **Coordinator** — job queue + API + web UI (+ optional `INTAKE_COPY` worker) | UGREEN DXP4800 Plus NAS | Docker container(s) |
 | 2 | **Agent** — one per processing machine | Each Windows workstation | `DataIntakeAgent.exe` + Task Scheduler |
 
 Everything else is a browser: staff use `http://<nas-ip>:8443` — no installs
 on office PCs, ever.
 
 ```text
-     Office browsers ──────────► NAS :8443 (Docker: queue + web UI + SQLite)
-                                    ▲ outbound polls only
-     INTAKE-01   TERRA-01 (…-02)  PIX4D-01   CYCLONE-01     ← agent.exe each
-     copy+RINEX  DJI Terra        Pix4Dmatic  3DR CLI
+     Office browsers ──────────► NAS :8443 (Docker: queue + web UI + SQLite
+                                    ▲          + NAS helper + INTAKE_COPY worker)
+                                    │ outbound polls only
+     WIN-RINEX   TERRA-01 (…-02)  PIX4D-01   CYCLONE-01     ← agent each
+     Trimble CLI DJI Terra        Pix4Dmatic  3DR CLI
                                     ▼
                           NAS shares (project data)
 ```
+
+The copy runs on the NAS (`INTAKE_COPY`), leaving only Trimble RINEX on Windows
+(`WIN-RINEX`) — Part 1.6. To skip the split, give one Windows agent the
+`INTAKE` capability (copy + RINEX together) and ignore the copy worker.
 
 ---
 
@@ -210,7 +215,9 @@ Invoke-RestMethod -Method Post -Uri http://<nas-ip>:8443/api/v1/nodes `
 ```
 
 The response includes the node's **token — shown exactly once**; save it for
-step 2.3. Repeat for `INTAKE-01`, `PIX4D-01`, `CYCLONE-01`, ….
+step 2.3. Repeat for `WIN-RINEX` (`RINEX_CONVERT`), `PIX4D-01`, `CYCLONE-01`, …
+(or `INTAKE-01` with `INTAKE` on the single-machine model). The NAS `INTAKE_COPY`
+worker is provisioned the same way — see Part 1.6.
 
 ### 2.3 Install on each machine
 
@@ -296,6 +303,6 @@ token, edit `.env` and `docker compose up -d`.
 | Machine shows **Paused** | Its own preflight is failing — the reason is on its card (locked desktop, wrong DPI/resolution, app already open by a person, NAS unreachable). |
 | Job stuck **Queued** | Is some *online* machine's toggle for that job type on (Machines tab)? Are the job's "waiting on" dependencies finished? |
 | Web actions return 401 | Set the admin token via ⚙ — it must match `DATA_INTAKE_ADMIN_TOKEN` in `.env`. |
-| INTAKE fails `source folder not found` | The *intake machine* must see that exact path — use a share/mapping that exists for the processing account. |
+| `INTAKE_COPY` fails `source folder not found` | The worker must see that path: on the NAS copy worker it's the `/mnt/ingest` mount (and `path_map` must map the projects-root UNC to `/mnt/3dData`); on a single-machine `INTAKE` agent it's a share/mapping for the processing account. |
 | `git clone` says repository not found | The repo is private — see Part 0 (ZIP download or `gh auth login`). |
 | Container won't start | `sudo docker compose logs` — usually a missing `.env` / `DATA_INTAKE_ADMIN_TOKEN` line. |

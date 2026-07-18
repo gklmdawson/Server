@@ -4,9 +4,11 @@ One rule: **browser for every human, Python for every machine.**
 
 A single coordinator (Docker container on the UGREEN NAS) runs the job queue,
 the REST API, and the React web app — office staff submit flights and watch
-progress from any browser, with zero installs. One small Python agent EXE runs
-on every Windows machine that does work; **everything is a job**, including
-intake itself (copy + RINEX conversion). The pywinauto payloads that click
+progress from any browser, with zero installs. One small Python agent runs on
+every machine that does work; **everything is a job**, including intake. Intake
+is split so the bulk copy runs **NAS-local** (a container beside the
+coordinator, no SMB round-trip) and only the Trimble RINEX step lands on
+Windows — a capability worker like the others. The pywinauto payloads that click
 through DJI Terra / Pix4Dmatic are unchanged — they are the irreplaceable core.
 
 ```text
@@ -15,16 +17,20 @@ through DJI Terra / Pix4Dmatic are unchanged — they are the irreplaceable core
                           ▼
        COORDINATOR — Docker on the UGREEN DXP4800 Plus
        FastAPI + SQLite + React UI (queue, submit form, dashboard,
-       per-machine capability toggles)
-                          ▲  outbound HTTP polls (/sync)
-        ┌───────────────┬─┴─────────────┬───────────────┐
-   INTAKE machine   TERRA box(es)   PIX4D box       CYCLONE box
-   agent.exe        agent.exe       agent.exe       agent.exe
-   INTAKE jobs:     DJI Terra via   Pix4Dmatic via  3DR.exe CLI
-   copy + RINEX     pywinauto       pywinauto       --silent
-        └───────────────┴───────────────┴───────────────┘
+       per-machine capability toggles) + NAS helper (EXIF probe, uploads)
+       ├─ INTAKE_COPY worker (container on the NAS): folder tree + card→3dData
+       ▲  outbound HTTP polls (/sync)
+        ┌───────────────┬─┴─────────────┬───────────────┬───────────────┐
+   RINEX box        TERRA box(es)   PIX4D box       CYCLONE box
+   agent            agent           agent           agent
+   RINEX_CONVERT:   DJI Terra via   Pix4Dmatic via  3DR.exe CLI
+   Trimble CLI      pywinauto       pywinauto       --silent
+        └───────────────┴───────────────┴───────────────┴───────────────┘
                      UGREEN NAS shares (project data)
 ```
+
+The single-machine model — one Windows agent with the `INTAKE` capability doing
+copy + RINEX together — remains a supported fallback.
 
 Machines are interchangeable by **capability**: each agent declares the job
 types its box can run (`agent.yaml`), and the dashboard's Machines tab
@@ -39,13 +45,13 @@ history: [DESIGN.md](DESIGN.md)
 
 | Path | What it is |
 |---|---|
-| `coordinator/` | FastAPI coordinator: SQLite job DB, `/sync` assignment, `/intake` submission builder, serves the web UI |
-| `web/` | React (Vite) web app: dashboard, submit form, projects, machine controls |
-| `agent/` | Workstation agent: sync loop, desktop preflight, runner with watchdog + crash recovery |
-| `processors/` | `intake` (copy+RINEX), `terra_ppk`, `terra_lidar`, `pix4dmatic`, `cyclone_classify`, `mock` |
+| `coordinator/` | FastAPI coordinator: SQLite job DB, `/sync` assignment, `/intake` submission builder, `probe.py` NAS helper (EXIF sensor/date/EPSG + uploads), serves the web UI |
+| `web/` | React (Vite) web app: dashboard, submit form (auto-detect + drag-drop uploads), projects, machine controls |
+| `agent/` | Agent: sync loop, desktop preflight, runner with watchdog + crash recovery; env-driven + UNC→mount `path_map` so it also runs as the NAS `INTAKE_COPY` worker |
+| `processors/` | `intake` / `intake_copy` / `rinex_convert`, `terra_ppk`, `terra_lidar`, `pix4dmatic`, `cyclone_classify`, `mock` |
 | `automation/` | GUI-automation payload scripts (run as EXEs on workstations, unchanged) |
 | `shared/` | Enums + API schemas shared by all components |
-| `Dockerfile`, `docker-compose.yml` | Coordinator container for the NAS (builds the web UI inside) |
+| `Dockerfile`, `docker-compose.yml` | NAS containers: coordinator (builds the web UI inside) + the `INTAKE_COPY` worker |
 | `scripts/` | `fake_agent.py`, agent install/update PowerShell |
 | `build.py` | PyInstaller builds: `agent`, `coordinator`, `terra`, `ppk`, `pix4d` |
 | `data_intake.py`, `classify_3dr.py` | Legacy PyQt5 intake GUI + 3DR watcher (kept until the web intake is trusted, then retired) |
@@ -57,7 +63,7 @@ history: [DESIGN.md](DESIGN.md)
 pip install -e ".[coordinator,agent,dev]"
 python -m coordinator.main            # http://127.0.0.1:8443
 python scripts/fake_agent.py --node TERRA-01 --capabilities TERRA_PPK,TERRA_LIDAR
-pytest                                # 103 tests
+pytest                                # 130 tests
 
 # Web UI (only needed when changing it — production builds it in Docker):
 cd web && npm install
@@ -70,13 +76,18 @@ page, so the PyInstaller EXE workflow still works without Node.
 
 ## How work flows
 
-1. **Submit** (browser): client/project/date/sensor, source paths, base data,
-   EPSG, chains. `POST /api/v1/intake` builds the whole job graph server-side
+1. **Submit** (browser): client/project/date, then pick the source folder —
+   the NAS helper (`GET /api/v1/intake/probe`) reads one image on the share and
+   pre-fills sensor, date and EPSG H+V (all editable). Small inputs (base data,
+   targets csv, base ECEF csv) are drag-drop **uploaded**; bulk data stays a
+   path. `POST /api/v1/intake` builds the job graph server-side
    (`coordinator/intake.py` — the parameter contract from DESIGN.md §8).
-2. **INTAKE job** runs on whichever machine declares the `INTAKE` capability
-   and can see the source paths: folder tree → resumable copy → base data →
-   Trimble RINEX conversion → obs distribution per sensor type.
-3. **Chains** gate on it: `TERRA_PPK → PIX4D_MATIC` and/or
+2. **Split intake**: `INTAKE_COPY` (NAS-local folder tree + resumable copy)
+   runs first; `RINEX_CONVERT` (Trimble conversion + obs distribution on
+   Windows) follows when base data is supplied. The same job carries UNC paths;
+   the copy worker rewrites them to its mounts via `path_map`. (The monolithic
+   `INTAKE` capability still does both on one machine.)
+3. **Chains** gate on the last intake job: `TERRA_PPK → PIX4D_MATIC` and/or
    `TERRA_LIDAR → CYCLONE_CLASSIFY`, routed purely by capability.
 4. **Dashboard** shows machines, progress, queue, and an attention panel;
    retry/cancel/drain and per-machine capability toggles are one click
