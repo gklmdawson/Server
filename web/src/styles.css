@@ -1,48 +1,52 @@
-/* Design tokens — reference dataviz palette (light + dark selected steps).
-   Status colors are reserved for state and always paired with a text label;
-   series/accent blue carries progress + interactive accents. */
+/* Design tokens — Sunrise 2025 brand palette (see Sunrise Color & Type guide).
+   Primary: Navy #113E59, Yellow #FFD457, Gray #A3A5A8.
+   Secondary: Cedar #CA563C, Cerulean #0077A8, Deep Space #4C6E75,
+              Horizon #009ACB, Ruby #D2342E, Spruce #006F67.
+   Navy carries ink/brand; Cerulean (light) / Horizon (dark) is the
+   interactive accent; status colors map to Spruce/Yellow/Cedar/Ruby and are
+   always paired with a text label. */
 
 :root {
   color-scheme: light;
-  --page: #f9f9f7;
-  --surface: #fcfcfb;
-  --ink: #0b0b0b;
-  --ink-2: #52514e;
-  --muted: #898781;
-  --grid: #e1e0d9;
-  --baseline: #c3c2b7;
-  --border: rgba(11, 11, 11, 0.1);
-  --accent: #2a78d6;
+  --page: #f4f7f9;
+  --surface: #ffffff;
+  --ink: #113e59;          /* Sunrise Navy */
+  --ink-2: #4c6e75;        /* Sunrise Deep Space */
+  --muted: #a3a5a8;        /* Sunrise Gray */
+  --grid: #e4e9ec;
+  --baseline: #c7ced2;
+  --border: rgba(17, 62, 89, 0.12);
+  --accent: #0077a8;       /* Sunrise Cerulean */
   --accent-ink: #ffffff;
-  --track: #f0efec;
-  --good: #0ca30c;
-  --good-text: #006300;
-  --warning: #fab219;
-  --serious: #ec835a;
-  --critical: #d03b3b;
-  --chip-neutral: #f0efec;
+  --track: #eaeff2;
+  --good: #006f67;         /* Sunrise Spruce */
+  --good-text: #005e57;
+  --warning: #ffd457;      /* Sunrise Yellow */
+  --serious: #ca563c;      /* Sunrise Cedar */
+  --critical: #d2342e;     /* Sunrise Ruby */
+  --chip-neutral: #eaeff2;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
+    --page: #0c1922;       /* deep navy-black */
+    --surface: #16242e;
     --ink: #ffffff;
-    --ink-2: #c3c2b7;
-    --muted: #898781;
-    --grid: #2c2c2a;
-    --baseline: #383835;
-    --border: rgba(255, 255, 255, 0.1);
-    --accent: #3987e5;
+    --ink-2: #c4cdd3;
+    --muted: #9ba6ac;      /* Sunrise Gray, lifted for dark */
+    --grid: #263640;
+    --baseline: #35454f;
+    --border: rgba(255, 255, 255, 0.12);
+    --accent: #009acb;     /* Sunrise Horizon (brighter on dark) */
     --accent-ink: #ffffff;
-    --track: #2c2c2a;
-    --good: #0ca30c;
-    --good-text: #0ca30c;
-    --warning: #fab219;
-    --serious: #ec835a;
-    --critical: #d03b3b;
-    --chip-neutral: #2c2c2a;
+    --track: #22323c;
+    --good: #2fa597;       /* Spruce, lightened */
+    --good-text: #5cc6b9;
+    --warning: #ffd457;    /* Sunrise Yellow */
+    --serious: #e07456;    /* Cedar, lightened */
+    --critical: #e5514b;   /* Ruby, lightened */
+    --chip-neutral: #22323c;
   }
 }
 
@@ -54,13 +58,37 @@ body {
   margin: 0;
   background: var(--page);
   color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Sunrise type: Segoe first (native on the shop's Windows machines). */
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   line-height: 1.45;
 }
 
 button {
   font: inherit;
+}
+
+/* Sunrise headings: Segoe UI Bold, CAPS, tight (-20) tracking. Subheadings /
+   body stay regular case. Nested buttons and meta counts opt out of caps. */
+h1,
+h2,
+h3 {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+h1,
+h2 {
+  text-transform: uppercase;
+}
+
+h1 button,
+h2 button,
+h1 .count,
+h2 .count {
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* ---- layout ---- */
@@ -71,7 +99,9 @@ button {
   gap: 16px;
   padding: 10px 20px;
   background: var(--surface);
-  border-bottom: 1px solid var(--grid);
+  /* Sunrise brand strip: Yellow over a Navy rule. */
+  border-top: 3px solid var(--warning);
+  border-bottom: 2px solid var(--ink);
   position: sticky;
   top: 0;
   z-index: 10;
