@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api.js";
 import { PathInput, PathLines, normalizePath } from "./FilePicker.jsx";
+import { UploadField } from "./UploadField.jsx";
 import { ErrorBanner } from "./ui.jsx";
 
 // The intake form replaces data_intake.py's GUI: it collects DECISIONS only.
-// The heavy work (copy to the NAS, RINEX conversion) runs as an INTAKE job on
-// the machine that can see the source paths, then the selected chains follow.
+// Large flight data stays on the share (addressed by path); the small inputs
+// (base data, targets csv, base ECEF csv) are UPLOADED here. Picking a source
+// folder probes it on the NAS (EXIF) to pre-fill sensor/date/EPSG — all still
+// editable. The heavy work runs as INTAKE_COPY -> RINEX_CONVERT jobs.
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -25,6 +28,13 @@ function splitLines(text) {
 const LIDAR = ["L2", "L3"];
 const BASE_DATA_EXTS = [".t02", ".t04", ".t0b"];
 
+function chainDefaults(sensor) {
+  return {
+    run_photo_chain: ["M3E", "P1"].includes(sensor) || LIDAR.includes(sensor),
+    run_lidar_chain: LIDAR.includes(sensor),
+  };
+}
+
 export default function Submit({ onSubmitted }) {
   const [options, setOptions] = useState({ sensors: [], defaults: {} });
   const [form, setForm] = useState({
@@ -34,22 +44,32 @@ export default function Submit({ onSubmitted }) {
     date: todayDate(),
     sensor_type: "M3E",
     sources: "",
-    bases: "",
     base_data_is_rinex: false,
     ecef: "",
     run_photo_chain: true,
     run_lidar_chain: false,
-    gcp_path: "",
     epsg_h: "",
     epsg_v: "",
     no_targets: false,
     classify_model: "",
     priority: "100",
   });
+  const [baseUploads, setBaseUploads] = useState([]); // [{name,size,stored_path,error}]
+  const [gcpUpload, setGcpUpload] = useState([]);      // 0 or 1 item
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
   const [browseRoots, setBrowseRoots] = useState([]);
+
+  // Probe (NAS helper) state.
+  const [probeInfo, setProbeInfo] = useState(null);
+  const [probeTarget, setProbeTarget] = useState(null); // {root, path}
+  const [probing, setProbing] = useState(false);
+  const [rtk, setRtk] = useState(null);
+  const [rtkBusy, setRtkBusy] = useState(false);
+  const [ecefBusy, setEcefBusy] = useState(false);
+  const [ecefOver, setEcefOver] = useState(false);
+  const [ecefErr, setEcefErr] = useState(null);
 
   useEffect(() => {
     api
@@ -82,17 +102,70 @@ export default function Submit({ onSubmitted }) {
 
   const setSensor = (e) => {
     const sensor = e.target.value;
-    setForm((f) => ({
-      ...f,
-      sensor_type: sensor,
-      // Sensible chain defaults; still editable below.
-      run_photo_chain: ["M3E", "P1"].includes(sensor) || LIDAR.includes(sensor),
-      run_lidar_chain: LIDAR.includes(sensor),
-    }));
+    setForm((f) => ({ ...f, sensor_type: sensor, ...chainDefaults(sensor) }));
+  };
+
+  // --- probe: pre-fill sensor/date/EPSG from the picked source folder ---
+  const runProbe = async (root, relPath) => {
+    setProbeTarget({ root, path: relPath });
+    setProbing(true);
+    setRtk(null);
+    setProbeInfo(null);
+    try {
+      const p = await api.probe(root, relPath);
+      setProbeInfo(p);
+      setForm((f) => ({
+        ...f,
+        sensor_type: p.sensor || f.sensor_type,
+        date: p.date || f.date,
+        epsg_h: p.epsg_h || f.epsg_h,
+        epsg_v: p.epsg_v || f.epsg_v,
+        ...(p.sensor ? chainDefaults(p.sensor) : {}),
+      }));
+    } catch (err) {
+      setProbeInfo({ error: err.message || "probe failed" });
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const onSourceMeta = (root, relPaths) => {
+    if (root && relPaths && relPaths.length) runProbe(root, relPaths[0]);
+  };
+
+  const checkRtk = async () => {
+    if (!probeTarget) return;
+    setRtkBusy(true);
+    setRtk(null);
+    try {
+      const p = await api.probe(probeTarget.root, probeTarget.path, true);
+      setRtk(p.rtk || { error: "no result" });
+    } catch (err) {
+      setRtk({ error: err.message || "scan failed" });
+    } finally {
+      setRtkBusy(false);
+    }
+  };
+
+  // --- base ECEF csv: drop a file, parse X/Y/Z into the field ---
+  const takeEcefFile = async (file) => {
+    if (!file) return;
+    setEcefBusy(true);
+    setEcefErr(null);
+    try {
+      const r = await api.parseEcefFile(file);
+      const [x, y, z] = r.ecef;
+      setForm((f) => ({ ...f, ecef: `${x}, ${y}, ${z}` }));
+    } catch (err) {
+      setEcefErr(err.message || "could not parse ECEF csv");
+    } finally {
+      setEcefBusy(false);
+    }
   };
 
   const payload = useMemo(() => {
     const ecefParts = splitLines(form.ecef.replaceAll(",", "\n"));
+    const gcp = gcpUpload[0]?.stored_path || "";
     return {
       root_path: normalizePath(form.root_path),
       client: form.client.trim(),
@@ -100,19 +173,19 @@ export default function Submit({ onSubmitted }) {
       date: form.date.trim(),
       sensor_type: form.sensor_type,
       source_folders: splitLines(form.sources),
-      base_data_paths: splitLines(form.bases),
+      base_data_paths: baseUploads.filter((u) => u.stored_path).map((u) => u.stored_path),
       base_data_is_rinex: form.base_data_is_rinex,
       base_ecef_xyz: ecefParts.length === 3 ? ecefParts.map(Number) : null,
       run_photo_chain: form.run_photo_chain,
       run_lidar_chain: isLidar && form.run_lidar_chain,
-      gcp_path: normalizePath(form.gcp_path),
+      gcp_path: gcp,
       epsg_h: form.epsg_h.trim(),
       epsg_v: form.epsg_v.trim(),
       no_targets: form.no_targets,
       classify_model: form.run_lidar_chain ? form.classify_model.trim() : "",
       priority: parseInt(form.priority, 10) || 100,
     };
-  }, [form, isLidar]);
+  }, [form, isLidar, baseUploads, gcpUpload]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -220,23 +293,59 @@ export default function Submit({ onSubmitted }) {
           <legend>Data</legend>
           <PathLines
             label="Source folder(s) — one per line"
-            hint="must be reachable from the intake machine (ingest share or its local disk); drop or paste paths, or Browse"
+            hint="the flight data on the share/card; picking one auto-detects sensor, date & EPSG below"
             required
             value={form.sources}
             onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
             roots={browseRoots}
             mode="folder"
             pickerTitle="Pick source folder(s)"
+            onPickMeta={onSourceMeta}
           />
-          <PathLines
-            label="Base data file(s) — one per line"
-            hint=".T02/.T04, or a RINEX obs if already converted"
-            value={form.bases}
-            onChange={(v) => setForm((f) => ({ ...f, bases: v }))}
-            roots={browseRoots}
-            mode="file"
-            exts={form.base_data_is_rinex ? null : BASE_DATA_EXTS}
-            pickerTitle="Pick base data file(s)"
+          {(probing || probeInfo) && (
+            <div className={`banner ${probeInfo?.error ? "error" : "ok"} probe-banner`}>
+              {probing && "Reading flight images on the NAS…"}
+              {probeInfo?.error && `Auto-detect unavailable: ${probeInfo.error}`}
+              {probeInfo && !probeInfo.error && (
+                <>
+                  Auto-detected{" "}
+                  <b>{probeInfo.sensor || "unknown sensor"}</b>
+                  {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
+                  {probeInfo.date ? `, ${probeInfo.date}` : ""}
+                  {probeInfo.epsg_h
+                    ? `, EPSG ${probeInfo.epsg_h}/${probeInfo.epsg_v || "?"}`
+                    : ", no EPSG (enter manually)"}{" "}
+                  from {probeInfo.image_count || 0} image
+                  {probeInfo.image_count === 1 ? "" : "s"}. Everything below is editable.
+                  {"  "}
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={rtkBusy}
+                    onClick={checkRtk}
+                  >
+                    {rtkBusy ? "Scanning…" : "Check RTK coverage"}
+                  </button>
+                  {rtk && !rtk.error && rtk.fixed_pct != null && (
+                    <span className="hint">
+                      {" "}
+                      RTK fixed on {rtk.fixed_pct.toFixed(0)}% of {rtk.total_photos} photos
+                    </span>
+                  )}
+                  {rtk?.error && <span className="hint"> RTK scan: {rtk.error}</span>}
+                </>
+              )}
+            </div>
+          )}
+
+          <UploadField
+            label="Base data file(s)"
+            hint=".T02/.T04, or a RINEX obs if already converted — uploaded to the NAS"
+            accept={form.base_data_is_rinex ? null : BASE_DATA_EXTS}
+            multiple
+            uploader={api.uploadIntakeFile}
+            items={baseUploads}
+            onItems={setBaseUploads}
           />
           <label className="check">
             <input
@@ -249,10 +358,24 @@ export default function Submit({ onSubmitted }) {
               <span className="why">(skips Trimble conversion; companions are collected)</span>
             </span>
           </label>
-          <div className="field">
+          <div
+            className={`field ecef-drop ${ecefOver ? "drag-over" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setEcefOver(true);
+            }}
+            onDragLeave={() => setEcefOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setEcefOver(false);
+              if (e.dataTransfer.files?.length) takeEcefFile(e.dataTransfer.files[0]);
+            }}
+          >
             <label>
               Corrected base position — ECEF X, Y, Z{" "}
-              <span className="hint">optional; comma-separated metres</span>
+              <span className="hint">
+                optional; type metres or drop a Point ID,X,Y,Z csv
+              </span>
             </label>
             <input
               type="text"
@@ -260,6 +383,8 @@ export default function Submit({ onSubmitted }) {
               value={form.ecef}
               onChange={set("ecef")}
             />
+            {ecefBusy && <div className="drop-note">Parsing ECEF csv…</div>}
+            {ecefErr && <div className="drop-note">{ecefErr}</div>}
           </div>
         </fieldset>
 
@@ -291,15 +416,13 @@ export default function Submit({ onSubmitted }) {
           </label>
 
           <div className="row3">
-            <PathInput
+            <UploadField
               label="Targets / GCP csv"
-              hint="TAT file"
-              value={form.gcp_path}
-              onChange={(v) => setForm((f) => ({ ...f, gcp_path: v }))}
-              roots={browseRoots}
-              mode="file"
-              exts={[".csv"]}
-              pickerTitle="Pick the targets / GCP csv"
+              hint="TAT file — uploaded to the NAS"
+              accept={[".csv"]}
+              uploader={api.uploadIntakeFile}
+              items={gcpUpload}
+              onItems={setGcpUpload}
             />
             <div className="field">
               <label>EPSG horizontal</label>

@@ -84,7 +84,10 @@ function matchesExt(name, exts) {
 }
 
 // mode: "file" | "folder"; multi: allow picking several at once.
-export function FilePicker({ roots, mode, exts, multi, title, onPick, onClose }) {
+// onPickMeta(rootLabel, [relPaths]) fires alongside onPick so callers can, e.g.,
+// probe a picked source folder (which needs the root + relative path, not the
+// display UNC path onPick hands back).
+export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta, onClose }) {
   const [rootLabel, setRootLabel] = useState(roots.length === 1 ? roots[0].label : "");
   const [path, setPath] = useState("");
   const [listing, setListing] = useState(null);
@@ -125,12 +128,15 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onClose })
   const joined = (name) => `${listing.display_path}${listing.sep}${name}`;
 
   const confirmSelected = () => {
-    onPick([...selected].map(joined));
+    const names = [...selected];
+    onPick(names.map(joined));
+    onPickMeta?.(rootLabel, names.map((name) => (path ? `${path}/${name}` : name)));
     onClose();
   };
 
   const chooseCurrent = () => {
     onPick([listing.display_path]);
+    onPickMeta?.(rootLabel, [path]);
     onClose();
   };
 
@@ -316,7 +322,7 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
 }
 
 // Multi-path textarea, one path per line (source folders, base data files).
-export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle }) {
+export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
   const append = (text) => {
@@ -348,6 +354,7 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           multi={true}
           title={pickerTitle || label}
           onPick={(paths) => append(paths.join("\n"))}
+          onPickMeta={onPickMeta}
           onClose={() => setOpen(false)}
         />
       )}

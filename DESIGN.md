@@ -39,6 +39,41 @@ one rule: **browser for every human, Python for every machine.**
 Deployment runbook: **DEPLOY.md**. Retirement of `data_intake.py` happens
 only after supervised parallel running of the web intake.
 
+## v3.1 addendum (split intake + NAS helper)
+
+Two changes let intake run without a Windows machine touching the bulk data,
+and bring back the old GUI's dynamic form:
+
+1. **Intake is split into two jobs.** `INTAKE_COPY` (capability on a NAS-local
+   worker) builds the folder tree and copies card → `3dData` as a **local disk
+   copy** — no SMB round-trip, no `shutil`-through-Windows. `RINEX_CONVERT`
+   (capability on a Windows worker) then runs only the Trimble `convertToRinex`
+   step and distributes the obs; it reads/writes just the small BaseData set,
+   never the imagery. `build_job_specs` emits `INTAKE_COPY → RINEX_CONVERT →
+   chains` (RINEX_CONVERT only when base data is supplied; chains gate on the
+   last intake job). The monolithic `INTAKE` processor stays as the
+   single-machine / EXE fallback. Processors live in `processors/intake.py`
+   (`IntakeCopyProcessor`, `RinexConvertProcessor`, shared `_IntakeBase`).
+
+2. **A read-only NAS helper pre-fills the form** (`coordinator/probe.py`,
+   `GET /api/v1/intake/probe`). Running inside the coordinator container with
+   the card + `3dData` mounted read-only, it reads one representative image and
+   returns **sensor** (EXIF Model), **date**, **GPS**, and **EPSG H+V** — the
+   vertical pulled from the *same* State Plane table as the horizontal
+   (`STATEPLANE_HV`), never defaulted. An opt-in `rtk=true` runs an exiftool
+   RtkFlag coverage scan. EPSG needs the State Plane shapefile at
+   `stateplane_shapefile` in config (its `.dbf` sibling read alongside); absent,
+   the EPSG fields just come back blank. Small inputs (base data, targets csv,
+   base ECEF csv) are **uploaded** (`POST /api/v1/intake/upload`,
+   `/intake/parse-ecef`) to the NAS uploads volume rather than addressed by
+   path; the bulk imagery is never uploaded. All auto-detected fields remain
+   user-editable — the probe only pre-fills them.
+
+Open items: the `INTAKE_COPY` worker ships as a second Linux container (sketched
+in `docker-compose.yml`); the State Plane shapefile must be dropped into the
+image; and card→3dData path translation for the NAS worker is a mount/config
+concern (see DEPLOY.md).
+
 This is the ChatGPT build spec ("Data Intake Distributed Processing System") reviewed
 against the actual code (`data_intake.py`, `classify_3dr.py`, the three automation
 scripts), trimmed where it was over-engineered for a 3-workstation shop, and hardened

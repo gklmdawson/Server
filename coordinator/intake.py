@@ -1,4 +1,9 @@
-"""Server-side intake submission: one form -> INTAKE job + processing chains.
+"""Server-side intake submission: one form -> split intake jobs + chains.
+
+The intake step is split: INTAKE_COPY (NAS-local folder tree + bulk copy) runs
+first, then RINEX_CONVERT (Windows Trimble conversion) when base data is
+supplied; the processing chains gate on whichever intake job is last.
+
 
 This is the single source of truth for the parameter building the intake GUI
 does in `_handle_complete()` today (and `intake/queue_client.py` mirrors).
@@ -83,21 +88,33 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
     names = sorted({PureWindowsPath(s.replace("\\", "/")).name for s in sources})
     dji_data_source = _w(sensor_path, names[0]) if len(names) == 1 else sensor_path
 
+    intake_params = {
+        "root_path": root,
+        "client": client,
+        "project": project,
+        "date": date,
+        "sensor_type": sensor,
+        "source_folders": sources,
+        "base_data_paths": [b.strip() for b in body.base_data_paths if b.strip()],
+        "base_data_is_rinex": body.base_data_is_rinex,
+        "base_ecef_xyz": body.base_ecef_xyz,
+    }
+
+    # Split intake: the NAS-local copy (INTAKE_COPY) runs first; the Windows
+    # RINEX conversion (RINEX_CONVERT) follows only when there is base data to
+    # convert. Processing chains gate on whichever intake step is last.
     specs: list[dict[str, Any]] = [{
-        "job_type": "INTAKE",
-        "parameters": {
-            "root_path": root,
-            "client": client,
-            "project": project,
-            "date": date,
-            "sensor_type": sensor,
-            "source_folders": sources,
-            "base_data_paths": [b.strip() for b in body.base_data_paths if b.strip()],
-            "base_data_is_rinex": body.base_data_is_rinex,
-            "base_ecef_xyz": body.base_ecef_xyz,
-        },
+        "job_type": "INTAKE_COPY",
+        "parameters": intake_params,
         "depends_on": [],
     }]
+    if intake_params["base_data_paths"]:
+        specs.append({
+            "job_type": "RINEX_CONVERT",
+            "parameters": intake_params,
+            "depends_on": [0],
+        })
+    intake_gate = len(specs) - 1  # index of the last intake job
 
     if body.run_photo_chain:
         specs.append({
@@ -111,7 +128,7 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
                 "epsg_h": body.epsg_h,
                 "epsg_v": body.epsg_v,
             },
-            "depends_on": [0],
+            "depends_on": [intake_gate],
         })
         specs.append({
             "job_type": "PIX4D_MATIC",
@@ -137,7 +154,7 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
                 "epsg_v": body.epsg_v,
                 "no_targets": body.no_targets,
             },
-            "depends_on": [0],
+            "depends_on": [intake_gate],
         })
         if body.classify_model:
             specs.append({

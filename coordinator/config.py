@@ -74,7 +74,23 @@ class CoordinatorConfig:
     #     3dData:
     #       path: /mnt/3dData
     #       display: \\192.168.35.25\3dData
+    #     ingest:                       # the card share, mounted read-only
+    #       path: /mnt/ingest
+    #       display: \\192.168.35.25
     browse_roots: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    # NAS helper (GET /api/v1/intake/probe): where the coordinator process can
+    # read the State Plane shapefile for EPSG auto-detect (its .dbf sibling is
+    # read alongside), and the exiftool command for the RTK coverage scan.
+    # Empty shapefile path = EPSG fields just come back blank for manual entry.
+    stateplane_shapefile: str = ""
+    exiftool_path: str = "exiftool"
+
+    # Small-file uploads (POST /api/v1/intake/upload): base data + targets csv
+    # the operator drops in the browser land here, on a volume the INTAKE_COPY
+    # worker also mounts. Must be writable by the coordinator process.
+    upload_dir: str = "data/uploads"
+    max_upload_bytes: int = 64 * 1024 * 1024  # 64 MB — base/csv are tiny
 
     log_level: str = "INFO"
 

@@ -1,18 +1,32 @@
-"""INTAKE processor — the intake GUI's copy + RINEX pipeline as a queue job.
+"""INTAKE processors — the intake GUI's copy + RINEX pipeline as queue jobs.
 
-This is ProcessingWorker._process_data from data_intake.py, running on
-whichever machine can see the source data (capability INTAKE in that agent's
-config). The web form only collects decisions; this job moves the bytes:
+This is ProcessingWorker._process_data from data_intake.py. It comes in three
+flavours built from the same building blocks (all in intake_ops):
 
-    build folder tree -> copy each source into <date>/<sensor>/<name>/ ->
-    copy base data into <date>/BaseData -> convert T02/T04 to RINEX (Trimble
-    CLI) or rename provided RINEX -> distribute the obs file per sensor type.
+  * ``IntakeProcessor``      (INTAKE)        — the whole pipeline on one machine
+                                               (the single-machine / Windows-EXE
+                                               fallback; unchanged behaviour).
+  * ``IntakeCopyProcessor``  (INTAKE_COPY)   — the NAS-local half: build the
+                                               folder tree, copy each source into
+                                               <date>/<sensor>/<name>/, and copy
+                                               the raw base files into
+                                               <date>/BaseData. No Windows, no
+                                               converter — runs in a container on
+                                               the NAS reading the card locally.
+  * ``RinexConvertProcessor``(RINEX_CONVERT) — the Windows half: convert
+                                               T02/T04 to RINEX (Trimble CLI) or
+                                               rename provided RINEX, then
+                                               distribute the obs per sensor.
+                                               Reads/writes only the small
+                                               BaseData set — never the bulk data.
 
-Resumable by design: copy_tree skips destination files that already exist
-with the same size, so a crash/retry finishes the remainder instead of
-duplicating (see intake_ops). Completion is judged by validate_outputs —
-every source file accounted for at the destination, plus an obs file in
-BaseData whenever base data was supplied.
+The split lets the big copy run NAS-local (no SMB round-trip) while the only
+Windows-bound step, RINEX conversion, becomes a capability-scoped worker like
+Terra/Pix4D/Cyclone. build_job_specs chains them INTAKE_COPY -> RINEX_CONVERT ->
+processing chains.
+
+Resumable by design: copy_tree skips destination files that already exist with
+the same size, so a crash/retry finishes the remainder instead of duplicating.
 
 Parameters (built by POST /api/v1/intake):
     root_path, client, project, date (ddMonYYYY), sensor_type,
@@ -20,7 +34,7 @@ Parameters (built by POST /api/v1/intake):
     base_ecef_xyz ([x,y,z] or null)
 
 Agent config: payload_paths.convert_to_rinex_exe — required only when base
-data needs conversion (T02/T04 supplied).
+data needs conversion (T02/T04 supplied) — i.e. on the RINEX_CONVERT worker.
 """
 from __future__ import annotations
 
@@ -38,11 +52,12 @@ R3PRO_SENSORS = ("R3Pro", "R3ProMobile")
 LIDAR_SENSORS = ("L2", "L3")
 
 
-class IntakeProcessor(Processor):
-    job_types = {"INTAKE"}
+class _IntakeBase(Processor):
+    """Shared parameter helpers + pipeline building blocks."""
+
     requires_desktop = False
     custom_execution = True
-    version = "1.0"
+    version = "1.1"
 
     # --- parameter helpers ---------------------------------------------------
 
@@ -83,58 +98,42 @@ class IntakeProcessor(Processor):
     def _needs_converter(self, ctx: JobContext) -> bool:
         return bool(self._base_paths(ctx)) and not bool(ctx.parameters.get("base_data_is_rinex"))
 
-    # --- hooks -----------------------------------------------------------------
+    # --- shared preflight pieces --------------------------------------------
 
-    def preflight(self, ctx: JobContext) -> list[str]:
+    def _preflight_common(self, ctx: JobContext) -> list[str]:
         errors = missing_params(ctx, ["root_path", "client", "project", "date", "sensor_type"])
-        sources = self._sources(ctx)
-        if not sources:
-            errors.append("missing job parameter: source_folders")
-        for src in sources:
-            if not os.path.isdir(src):
-                errors.append(f"source folder not found (agent must be able to see it): {src}")
-        for base in self._base_paths(ctx):
-            if not os.path.isfile(base):
-                errors.append(f"base data file not found: {base}")
         root = str(ctx.parameters.get("root_path", ""))
         if root and not os.path.isdir(root):
             errors.append(f"projects root not reachable: {root}")
-        if self._needs_converter(ctx):
-            exe = self._converter_exe()
-            if not exe:
-                errors.append(f"agent config payload_paths.{CONVERTER_KEY} is not set "
-                              "(needed to convert T02/T04 base data)")
-            elif not os.path.isfile(exe):
-                errors.append(f"convertToRinex not found: {exe}")
         try:
             self._base_ecef(ctx)
         except ProcessorError as exc:
             errors.append(str(exc))
         return errors
 
-    def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
+    # --- pipeline building blocks -------------------------------------------
+
+    def _copy_sources(self, ctx: JobContext, paths: dict[str, str], progress,
+                      cancelled, status, pct_lo: float, pct_hi: float) -> Optional[str]:
+        """Build the tree, copy every source folder. Returns the first image
+        seen (for the EXIF flight-date sanity check)."""
         p = ctx.parameters
-        paths = self._paths(ctx)
         deadline = (ctx.started_wall or time.time()) + ctx.max_runtime_seconds
 
         def tick() -> bool:
-            """Cancel probe for the copy loops; raises past the deadline."""
             if time.time() > deadline:
                 raise ProcessorError(
                     "max runtime exceeded (completed files are kept; retry resumes)")
             return cancelled()
 
-        def status(message: str) -> None:
-            progress(None, "intake", message)
-
-        progress(1, "intake", "Creating folder structure…")
+        progress(pct_lo, "intake", "Creating folder structure…")
         structure = ops.build_structure(str(p["client"]), str(p["project"]),
                                         str(p["date"]), str(p["sensor_type"]))
         ops.create_folder_structure(str(p["root_path"]), structure)
 
-        # --- copy source data (bulk of the runtime) ---
         sources = self._sources(ctx)
         total = max(ops.count_files(sources), 1)
+        span = max(pct_hi - pct_lo - 4, 1)
         done = {"n": 0}
         first_image: Optional[str] = None
 
@@ -144,7 +143,7 @@ class IntakeProcessor(Processor):
             def on_file(fname: str, _name=name) -> None:
                 done["n"] += 1
                 if done["n"] % 25 == 0 or done["n"] == total:
-                    progress(5 + done["n"] / total * 70, "intake",
+                    progress(pct_lo + 4 + done["n"] / total * span, "intake",
                              f"Copying {_name}: {done['n']}/{total} files")
 
             copied, skipped, image = ops.copy_tree(
@@ -152,45 +151,30 @@ class IntakeProcessor(Processor):
                 on_status=status)
             first_image = first_image or image
             if cancelled():
-                return Validation(ok=False, errors=["cancelled"])
+                return first_image
             failed = ops.count_files([source]) - copied - skipped
             summary = f"{name}: {copied} copied, {skipped} already present"
             if failed > 0:
                 summary += f", {failed} FAILED (see COPY FAILED events above)"
             status(summary)
+        return first_image
 
-        # --- flight-date sanity check (warn only, like the GUI's auto-detect) ---
-        exif_date = ops.get_image_date(first_image) if first_image else None
-        if exif_date and exif_date != str(p["date"]):
-            status(f"WARNING: EXIF flight date {exif_date} != submitted date {p['date']} "
-                   "— folder tree uses the submitted date")
+    def _copy_base_raw(self, ctx: JobContext, paths: dict[str, str], status) -> None:
+        """Copy the raw base files (T02/T04 or provided RINEX) into BaseData.
+        This is a pure copy — conversion is a separate step."""
+        is_rinex = bool(ctx.parameters.get("base_data_is_rinex"))
+        copied = ops.copy_base_data(self._base_paths(ctx), paths["base_folder"],
+                                    is_rinex, status)
+        status(f"Base data: {copied} file(s) in {paths['base_folder']}")
 
-        # --- base data + RINEX ---
-        base_paths = self._base_paths(ctx)
-        if base_paths:
-            progress(78, "intake", "Copying base data…")
-            self._process_base_data(ctx, paths, status)
-        if cancelled():
-            return Validation(ok=False, errors=["cancelled"])
-
-        progress(97, "intake", "Validating outputs…")
-        validation = self.validate_outputs(ctx)
-        if exif_date:
-            validation.summary["exif_date"] = exif_date
-            validation.summary["date_matches_exif"] = exif_date == str(p["date"])
-        return validation
-
-    # --- sensor-specific base handling (ProcessingWorker._process_sensor_specific) ---
-
-    def _process_base_data(self, ctx: JobContext, paths: dict[str, str],
-                           status) -> None:
+    def _convert_and_distribute(self, ctx: JobContext, paths: dict[str, str],
+                                status) -> None:
+        """Convert BaseData to RINEX (or rename provided RINEX), then
+        distribute the obs per sensor type (ProcessingWorker._process_sensor_specific)."""
         p = ctx.parameters
         sensor = str(p["sensor_type"])
         is_rinex = bool(p.get("base_data_is_rinex"))
         base_folder = paths["base_folder"]
-
-        copied = ops.copy_base_data(self._base_paths(ctx), base_folder, is_rinex, status)
-        status(f"Base data: {copied} file(s) in {base_folder}")
 
         if is_rinex:
             ops.rename_mix_to_nav(base_folder, status)
@@ -200,7 +184,6 @@ class IntakeProcessor(Processor):
                               self._base_ecef(ctx), status)
 
         if sensor in R3PRO_SENSORS:
-            # Copy the (converted) base set into every flight's POS/base.
             for subfolder_name in os.listdir(paths["sensor_folder"]):
                 subfolder_path = os.path.join(paths["sensor_folder"], subfolder_name)
                 if not os.path.isdir(subfolder_path):
@@ -217,15 +200,12 @@ class IntakeProcessor(Processor):
 
         rinex_file = ops.find_rinex_obs(base_folder)
         if not rinex_file:
-            # Validation decides whether this fails the job; keep going so the
-            # copy work is never wasted.
             status("WARNING: no RINEX obs file found in BaseData after conversion")
             return
 
         if sensor in LIDAR_SENSORS:
             ops.rename_for_sensor(rinex_file, paths["sensor_folder"], status)
         else:
-            # M3E/P1: standardise to .obs and copy into every flight subfolder.
             obs_name = os.path.splitext(os.path.basename(rinex_file))[0] + ".obs"
             for subfolder_name in os.listdir(paths["sensor_folder"]):
                 subfolder_path = os.path.join(paths["sensor_folder"], subfolder_name)
@@ -233,10 +213,10 @@ class IntakeProcessor(Processor):
                     ops.copy_file(rinex_file, os.path.join(subfolder_path, obs_name))
                     status(f"Copied {obs_name} to {subfolder_path}")
 
-    # --- validation (also the crash-recovery judge) -------------------------------
+    # --- validation pieces ---------------------------------------------------
 
-    def validate_outputs(self, ctx: JobContext) -> Validation:
-        paths = self._paths(ctx)
+    def _validate_copy(self, ctx: JobContext, paths: dict[str, str],
+                       require_obs: bool) -> Validation:
         errors: list[str] = []
         outputs: list[str] = []
 
@@ -266,7 +246,7 @@ class IntakeProcessor(Processor):
             base_folder = paths["base_folder"]
             if not os.path.isdir(base_folder) or not any(os.scandir(base_folder)):
                 errors.append(f"BaseData folder is empty: {base_folder}")
-            elif ops.find_rinex_obs(base_folder) is None:
+            elif require_obs and ops.find_rinex_obs(base_folder) is None:
                 errors.append("no RINEX obs file in BaseData "
                               "(conversion failed or wrong base files?)")
             else:
@@ -276,4 +256,166 @@ class IntakeProcessor(Processor):
             ok=not errors, outputs=outputs, errors=errors,
             summary={"files_total": total, "files_present": present,
                      "base_files": len(base_paths)},
+        )
+
+
+class IntakeProcessor(_IntakeBase):
+    """Whole pipeline on one machine — the single-machine / EXE fallback."""
+
+    job_types = {"INTAKE"}
+
+    def preflight(self, ctx: JobContext) -> list[str]:
+        errors = self._preflight_common(ctx)
+        sources = self._sources(ctx)
+        if not sources:
+            errors.append("missing job parameter: source_folders")
+        for src in sources:
+            if not os.path.isdir(src):
+                errors.append(f"source folder not found (agent must be able to see it): {src}")
+        for base in self._base_paths(ctx):
+            if not os.path.isfile(base):
+                errors.append(f"base data file not found: {base}")
+        if self._needs_converter(ctx):
+            exe = self._converter_exe()
+            if not exe:
+                errors.append(f"agent config payload_paths.{CONVERTER_KEY} is not set "
+                              "(needed to convert T02/T04 base data)")
+            elif not os.path.isfile(exe):
+                errors.append(f"convertToRinex not found: {exe}")
+        return errors
+
+    def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
+        p = ctx.parameters
+        paths = self._paths(ctx)
+
+        def status(message: str) -> None:
+            progress(None, "intake", message)
+
+        first_image = self._copy_sources(ctx, paths, progress, cancelled, status, 1, 75)
+        if cancelled():
+            return Validation(ok=False, errors=["cancelled"])
+
+        exif_date = ops.get_image_date(first_image) if first_image else None
+        if exif_date and exif_date != str(p["date"]):
+            status(f"WARNING: EXIF flight date {exif_date} != submitted date {p['date']} "
+                   "— folder tree uses the submitted date")
+
+        if self._base_paths(ctx):
+            progress(78, "intake", "Copying base data…")
+            self._copy_base_raw(ctx, paths, status)
+            self._convert_and_distribute(ctx, paths, status)
+        if cancelled():
+            return Validation(ok=False, errors=["cancelled"])
+
+        progress(97, "intake", "Validating outputs…")
+        validation = self.validate_outputs(ctx)
+        if exif_date:
+            validation.summary["exif_date"] = exif_date
+            validation.summary["date_matches_exif"] = exif_date == str(p["date"])
+        return validation
+
+    def validate_outputs(self, ctx: JobContext) -> Validation:
+        return self._validate_copy(ctx, self._paths(ctx), require_obs=True)
+
+
+class IntakeCopyProcessor(_IntakeBase):
+    """NAS-local half: folder tree + bulk copy + raw base copy. No converter."""
+
+    job_types = {"INTAKE_COPY"}
+
+    def preflight(self, ctx: JobContext) -> list[str]:
+        errors = self._preflight_common(ctx)
+        sources = self._sources(ctx)
+        if not sources:
+            errors.append("missing job parameter: source_folders")
+        for src in sources:
+            if not os.path.isdir(src):
+                errors.append(f"source folder not found (agent must be able to see it): {src}")
+        for base in self._base_paths(ctx):
+            if not os.path.isfile(base):
+                errors.append(f"base data file not found: {base}")
+        return errors
+
+    def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
+        p = ctx.parameters
+        paths = self._paths(ctx)
+
+        def status(message: str) -> None:
+            progress(None, "intake_copy", message)
+
+        first_image = self._copy_sources(ctx, paths, progress, cancelled, status, 1, 90)
+        if cancelled():
+            return Validation(ok=False, errors=["cancelled"])
+
+        exif_date = ops.get_image_date(first_image) if first_image else None
+        if exif_date and exif_date != str(p["date"]):
+            status(f"WARNING: EXIF flight date {exif_date} != submitted date {p['date']} "
+                   "— folder tree uses the submitted date")
+
+        if self._base_paths(ctx):
+            progress(92, "intake_copy", "Copying base data…")
+            self._copy_base_raw(ctx, paths, status)
+
+        progress(97, "intake_copy", "Validating copy…")
+        validation = self.validate_outputs(ctx)
+        if exif_date:
+            validation.summary["exif_date"] = exif_date
+            validation.summary["date_matches_exif"] = exif_date == str(p["date"])
+        return validation
+
+    def validate_outputs(self, ctx: JobContext) -> Validation:
+        # No obs yet — that is the RINEX_CONVERT worker's job. Just require the
+        # raw base files to be present in BaseData.
+        return self._validate_copy(ctx, self._paths(ctx), require_obs=False)
+
+
+class RinexConvertProcessor(_IntakeBase):
+    """Windows half: convert BaseData to RINEX + distribute the obs per sensor."""
+
+    job_types = {"RINEX_CONVERT"}
+
+    def preflight(self, ctx: JobContext) -> list[str]:
+        errors = self._preflight_common(ctx)
+        paths = self._paths(ctx)
+        if not self._base_paths(ctx):
+            errors.append("RINEX_CONVERT has no base_data_paths to convert")
+        if not os.path.isdir(paths["base_folder"]):
+            errors.append(f"BaseData not found (INTAKE_COPY must run first): {paths['base_folder']}")
+        if not os.path.isdir(paths["sensor_folder"]):
+            errors.append(f"sensor folder not found (INTAKE_COPY must run first): {paths['sensor_folder']}")
+        if self._needs_converter(ctx):
+            exe = self._converter_exe()
+            if not exe:
+                errors.append(f"agent config payload_paths.{CONVERTER_KEY} is not set "
+                              "(needed to convert T02/T04 base data)")
+            elif not os.path.isfile(exe):
+                errors.append(f"convertToRinex not found: {exe}")
+        return errors
+
+    def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
+        paths = self._paths(ctx)
+
+        def status(message: str) -> None:
+            progress(None, "rinex", message)
+
+        progress(5, "rinex", "Converting base data to RINEX…")
+        self._convert_and_distribute(ctx, paths, status)
+        if cancelled():
+            return Validation(ok=False, errors=["cancelled"])
+
+        progress(97, "rinex", "Validating obs…")
+        return self.validate_outputs(ctx)
+
+    def validate_outputs(self, ctx: JobContext) -> Validation:
+        paths = self._paths(ctx)
+        base_folder = paths["base_folder"]
+        errors: list[str] = []
+        if not os.path.isdir(base_folder) or not any(os.scandir(base_folder)):
+            errors.append(f"BaseData folder is empty: {base_folder}")
+        elif ops.find_rinex_obs(base_folder) is None:
+            errors.append("no RINEX obs file in BaseData "
+                          "(conversion failed or wrong base files?)")
+        return Validation(
+            ok=not errors, outputs=[base_folder] if not errors else [],
+            errors=errors, summary={"base_files": len(self._base_paths(ctx))},
         )

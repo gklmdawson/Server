@@ -49,6 +49,33 @@ async function request(path, options = {}) {
   return data;
 }
 
+// Multipart upload for the small dropped files (base data / targets csv /
+// ECEF csv). Separate from request() because the body is FormData, not JSON.
+async function upload(path, file) {
+  const headers = {};
+  const token = getAdminToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const resp = await fetch(path, { method: "POST", headers, body: form });
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    /* non-JSON error body */
+  }
+  if (!resp.ok) {
+    const detail =
+      data && data.detail
+        ? typeof data.detail === "string"
+          ? data.detail
+          : JSON.stringify(data.detail)
+        : `HTTP ${resp.status}`;
+    throw new ApiError(resp.status, detail);
+  }
+  return data;
+}
+
 export const api = {
   status: () => request("/api/v1/status"),
   nodes: () => request("/api/v1/nodes"),
@@ -61,6 +88,14 @@ export const api = {
     request(
       `/api/v1/browse?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`
     ),
+  probe: (root, path = "", rtk = false) =>
+    request(
+      `/api/v1/intake/probe?root=${encodeURIComponent(root)}&path=${encodeURIComponent(
+        path
+      )}${rtk ? "&rtk=true" : ""}`
+    ),
+  uploadIntakeFile: (file) => upload("/api/v1/intake/upload", file),
+  parseEcefFile: (file) => upload("/api/v1/intake/parse-ecef", file),
   submitIntake: (body) => request("/api/v1/intake", { method: "POST", body }),
   retryJob: (uuid) => request(`/api/v1/jobs/${uuid}/retry`, { method: "POST" }),
   cancelJob: (uuid) => request(`/api/v1/jobs/${uuid}/cancel`, { method: "POST" }),

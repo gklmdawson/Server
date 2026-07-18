@@ -20,7 +20,7 @@ import secrets
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -582,6 +582,99 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
         "entries": entries,
         "truncated": truncated,
     }
+
+
+def _resolve_root_target(cfg: CoordinatorConfig, root: str, path: str) -> str:
+    """Resolve a configured browse root + relative path to a real, jailed
+    directory on this coordinator's filesystem (same rules as /browse)."""
+    spec = (cfg.browse_roots or {}).get(root)
+    if not spec or not spec.get("path"):
+        raise HTTPException(status_code=404, detail=f"Unknown browse root '{root}'")
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    if ".." in parts:
+        raise HTTPException(status_code=400, detail="path may not contain '..'")
+    base = os.path.realpath(str(spec["path"]))
+    target = os.path.realpath(os.path.join(base, *parts))
+    if target != base and not target.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="path escapes the browse root")
+    return target
+
+
+@router.get("/intake/probe")
+def intake_probe(request: Request, root: str, path: str = "", rtk: bool = False,
+                 cfg: CoordinatorConfig = Depends(get_cfg),
+                 _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """NAS helper: read one representative image in a source folder on the share
+    and return sensor / date / GPS / EPSG (H+V) so the web form can pre-fill
+    them — all editable. `rtk=true` adds the (slower) exiftool RtkFlag scan.
+
+    The folder is addressed exactly like /browse (a configured root + relative
+    path); reading never leaves the root and never mutates anything."""
+    from coordinator import probe as probe_mod
+
+    target = _resolve_root_target(cfg, root, path)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail=f"Not a folder: {path}")
+    result = probe_mod.probe_folder(target, cfg.stateplane_shapefile or None)
+    if rtk:
+        result["rtk"] = probe_mod.rtk_scan(target, cfg.exiftool_path or "exiftool")
+    return result
+
+
+@router.post("/intake/upload", status_code=201)
+async def intake_upload(request: Request, file: UploadFile = File(...),
+                        cfg: CoordinatorConfig = Depends(get_cfg),
+                        _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Store a small dropped file (base data / targets csv) on the NAS uploads
+    volume and return the path the INTAKE_COPY worker reads. The bulk imagery
+    is never uploaded — only these tiny inputs the operator has locally."""
+    safe_name = os.path.basename(file.filename or "upload.bin").replace("\\", "_")
+    if not safe_name or safe_name in (".", ".."):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    token = secrets.token_hex(8)
+    dest_dir = os.path.join(cfg.upload_dir, token)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, safe_name)
+
+    size = 0
+    limit = cfg.max_upload_bytes
+    with open(dest, "wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > limit:
+                out.close()
+                os.remove(dest)
+                raise HTTPException(status_code=413,
+                                    detail=f"file exceeds {limit} byte upload limit")
+            out.write(chunk)
+
+    return {"name": safe_name, "size": size, "stored_path": os.path.abspath(dest),
+            "token": token}
+
+
+@router.post("/intake/parse-ecef")
+async def intake_parse_ecef(request: Request, file: UploadFile = File(...),
+                            cfg: CoordinatorConfig = Depends(get_cfg),
+                            _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Parse a corrected-base-position CSV (Point ID,X,Y,Z ECEF) into [x,y,z]
+    metres so the form can pre-fill the ECEF field. The file itself is not
+    kept — only the three numbers are returned."""
+    from coordinator import probe as probe_mod
+    import tempfile
+
+    raw = await file.read(cfg.max_upload_bytes + 1)
+    if len(raw) > cfg.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="file too large")
+    with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        x, y, z = probe_mod.parse_base_ecef_csv(tmp_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        os.remove(tmp_path)
+    return {"ecef": [x, y, z]}
 
 
 @router.post("/jobs", status_code=201)

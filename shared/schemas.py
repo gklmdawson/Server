@@ -40,7 +40,9 @@ class ProjectStatus(str, Enum):
 
 
 # Known job types (informational — the coordinator accepts any string).
-INTAKE = "INTAKE"
+INTAKE = "INTAKE"                    # monolithic copy+RINEX (single-machine fallback)
+INTAKE_COPY = "INTAKE_COPY"          # NAS-local copy half of the split intake
+RINEX_CONVERT = "RINEX_CONVERT"      # Windows convert+distribute half of the split
 TERRA_PPK = "TERRA_PPK"
 TERRA_LIDAR = "TERRA_LIDAR"
 PIX4D_MATIC = "PIX4D_MATIC"
@@ -175,9 +177,11 @@ class ProjectCreate(BaseModel):
 class IntakeSubmit(BaseModel):
     """One flight's intake, submitted from the web form.
 
-    Creates the project, one INTAKE job (copy + RINEX on the intake machine),
-    and the selected processing chains gated on it. Paths must be visible to
-    the agents (UNC or a share mapped identically on every machine).
+    Creates the project, the split intake jobs (INTAKE_COPY on the NAS, then
+    RINEX_CONVERT on Windows when base data is supplied), and the selected
+    processing chains gated on the last intake job. source_folders are paths on
+    a share/card the workers can see; base_data_paths / gcp_path are usually
+    uploaded (POST /intake/upload) and carry the returned stored paths.
     """
     root_path: str                       # projects root, e.g. Z:/Survey/Projects
     client: str

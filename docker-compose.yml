@@ -14,13 +14,40 @@ services:
     ports:
       - "8443:8443"
     volumes:
-      # SQLite DB + optional coordinator.yaml. This is a path on the NAS's own
-      # filesystem accessed locally by the container — NOT SQLite over SMB.
+      # SQLite DB, optional coordinator.yaml, and the uploads staging dir
+      # (data/uploads) the browser drops base data / targets csv into. A path
+      # on the NAS's own filesystem accessed locally — NOT SQLite over SMB.
       - ./data:/data
-      # Data share for the web form's Browse buttons (read-only — the
-      # coordinator only LISTS it; agents do the writing over SMB). Must
-      # match a browse_roots `path` in coordinator.yaml.
+      # Data share for the web form's Browse buttons + the NAS helper's EXIF
+      # probe (read-only — the coordinator LISTS and READS it; agents do the
+      # writing). Must match a browse_roots `path` in coordinator.yaml.
       - /volume1/3dData:/mnt/3dData:ro
+      # The card lands here when a crew plugs it into the NAS. Read-only: the
+      # probe reads EXIF off it in place; the INTAKE_COPY worker copies from it.
+      # Mount the USB PARENT (the label, e.g. "Lexar", changes per card).
+      - /volumeUSB1/usbshare1:/mnt/ingest:ro
     environment:
       - DATA_INTAKE_ADMIN_TOKEN=${DATA_INTAKE_ADMIN_TOKEN:?set it in .env}
     restart: unless-stopped
+
+  # The NAS-local half of the split intake: builds the folder tree and copies
+  # card -> 3dData locally (no SMB round-trip), then leaves RINEX conversion to
+  # the Windows RINEX_CONVERT worker. Runs the agent with capability
+  # INTAKE_COPY. Needs the card read-only, 3dData READ-WRITE, and the same
+  # uploads dir the coordinator writes to. Uncomment once the agent image is
+  # built for Linux (see DEPLOY.md "Split intake").
+  #
+  # intake-copy:
+  #   build: .
+  #   image: data-intake-coordinator:latest
+  #   container_name: data-intake-copy
+  #   command: ["data-intake-agent", "--capabilities", "INTAKE_COPY"]
+  #   volumes:
+  #     - /volumeUSB1/usbshare1:/mnt/ingest:ro
+  #     - /volume1/3dData:/mnt/3dData
+  #     - ./data/uploads:/data/uploads:ro
+  #   environment:
+  #     - DATA_INTAKE_COORDINATOR_URL=http://coordinator:8443
+  #     - DATA_INTAKE_NODE_TOKEN=${DATA_INTAKE_COPY_TOKEN:?provision a node token}
+  #   restart: unless-stopped
+  #   depends_on: [coordinator]

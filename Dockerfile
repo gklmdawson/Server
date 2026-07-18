@@ -16,6 +16,12 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
+# exiftool: the NAS helper's RTK-coverage scan (Perl, cross-platform) — this is
+# the Linux replacement for the bundled Windows exiftool.exe.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install the coordinator package (server deps only — no pywinauto/Qt here).
 COPY pyproject.toml README.md ./
 COPY coordinator/ coordinator/
