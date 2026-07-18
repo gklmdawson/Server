@@ -61,13 +61,19 @@ class _IntakeBase(Processor):
 
     # --- parameter helpers ---------------------------------------------------
 
-    @staticmethod
-    def _sources(ctx: JobContext) -> list[str]:
-        return [str(s) for s in (ctx.parameters.get("source_folders") or []) if str(s).strip()]
+    def _tp(self, p: str) -> str:
+        """Translate a job path to this machine's local view (path_map).
+        No-op for Windows agents (empty map) and configs without the hook."""
+        translate = getattr(self.cfg, "translate_path", None)
+        return translate(p) if translate else p
 
-    @staticmethod
-    def _base_paths(ctx: JobContext) -> list[str]:
-        return [str(s) for s in (ctx.parameters.get("base_data_paths") or []) if str(s).strip()]
+    def _sources(self, ctx: JobContext) -> list[str]:
+        return [self._tp(str(s)) for s in (ctx.parameters.get("source_folders") or [])
+                if str(s).strip()]
+
+    def _base_paths(self, ctx: JobContext) -> list[str]:
+        return [self._tp(str(s)) for s in (ctx.parameters.get("base_data_paths") or [])
+                if str(s).strip()]
 
     @staticmethod
     def _base_ecef(ctx: JobContext) -> Optional[tuple[float, float, float]]:
@@ -82,7 +88,7 @@ class _IntakeBase(Processor):
 
     def _paths(self, ctx: JobContext) -> dict[str, str]:
         p = ctx.parameters
-        root, client = str(p["root_path"]), str(p["client"])
+        root, client = self._tp(str(p["root_path"])), str(p["client"])
         project, date = str(p["project"]), str(p["date"])
         sensor = str(p["sensor_type"])
         date_folder = ops.date_folder_path(root, client, project, date)
@@ -102,7 +108,7 @@ class _IntakeBase(Processor):
 
     def _preflight_common(self, ctx: JobContext) -> list[str]:
         errors = missing_params(ctx, ["root_path", "client", "project", "date", "sensor_type"])
-        root = str(ctx.parameters.get("root_path", ""))
+        root = self._tp(str(ctx.parameters.get("root_path", "")))
         if root and not os.path.isdir(root):
             errors.append(f"projects root not reachable: {root}")
         try:

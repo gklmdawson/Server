@@ -32,22 +32,34 @@ services:
 
   # The NAS-local half of the split intake: builds the folder tree and copies
   # card -> 3dData locally (no SMB round-trip), then leaves RINEX conversion to
-  # the Windows RINEX_CONVERT worker. Runs the agent with capability
-  # INTAKE_COPY. Needs the card read-only, 3dData READ-WRITE, and the same
-  # uploads dir the coordinator writes to. Uncomment once the agent image is
-  # built for Linux (see DEPLOY.md "Split intake").
-  #
-  # intake-copy:
-  #   build: .
-  #   image: data-intake-coordinator:latest
-  #   container_name: data-intake-copy
-  #   command: ["data-intake-agent", "--capabilities", "INTAKE_COPY"]
-  #   volumes:
-  #     - /volumeUSB1/usbshare1:/mnt/ingest:ro
-  #     - /volume1/3dData:/mnt/3dData
-  #     - ./data/uploads:/data/uploads:ro
-  #   environment:
-  #     - DATA_INTAKE_COORDINATOR_URL=http://coordinator:8443
-  #     - DATA_INTAKE_NODE_TOKEN=${DATA_INTAKE_COPY_TOKEN:?provision a node token}
-  #   restart: unless-stopped
-  #   depends_on: [coordinator]
+  # the Windows RINEX_CONVERT worker. Same image as the coordinator, run as the
+  # agent with capability INTAKE_COPY. Provision its node first (POST /nodes ->
+  # token) and put the token in .env — see DEPLOY.md "Split intake".
+  intake-copy:
+    build: .
+    image: data-intake-coordinator:latest
+    container_name: data-intake-copy
+    command: ["data-intake-agent"]
+    volumes:
+      # Card (read-only): the copy READS the source here.
+      - /volumeUSB1/usbshare1:/mnt/ingest:ro
+      # Storage share (READ-WRITE): the copy WRITES the project tree here.
+      - /volume1/3dData:/mnt/3dData
+      # The uploaded base data / targets csv the coordinator wrote.
+      - ./data/uploads:/data/uploads:ro
+      # Agent work dir (state file, logs, job dirs) on the NAS volume.
+      - ./data/intake-copy:/var/lib/data-intake-agent
+    environment:
+      - DATA_INTAKE_NODE_NAME=NAS-COPY
+      - DATA_INTAKE_COORDINATOR_URL=http://coordinator:8443
+      - DATA_INTAKE_CAPABILITIES=INTAKE_COPY
+      - DATA_INTAKE_WORK_ROOT=/var/lib/data-intake-agent
+      - DATA_INTAKE_NODE_TOKEN=${DATA_INTAKE_COPY_TOKEN:?provision a node token (POST /nodes) and set it in .env}
+      # Rewrite the projects-root UNC in job parameters to this container's
+      # mount. Only 3dData needs mapping: source folders are addressed by their
+      # local /mnt/ingest path (the ingest browse root's `display` is the mount,
+      # since only NAS containers read them) and uploaded base data is already a
+      # /data/uploads path. Adjust the server IP to match your NAS.
+      - DATA_INTAKE_PATH_MAP={"\\\\192.168.35.25\\3dData":"/mnt/3dData"}
+    restart: unless-stopped
+    depends_on: [coordinator]

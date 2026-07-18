@@ -76,7 +76,7 @@ class CoordinatorConfig:
     #       display: \\192.168.35.25\3dData
     #     ingest:                       # the card share, mounted read-only
     #       path: /mnt/ingest
-    #       display: \\192.168.35.25
+    #       display: /mnt/ingest        # local: only NAS containers read sources
     browse_roots: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # NAS helper (GET /api/v1/intake/probe): where the coordinator process can

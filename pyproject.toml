@@ -53,6 +53,7 @@ dev = [
 
 [project.scripts]
 data-intake-coordinator = "coordinator.main:run"
+data-intake-agent = "agent.main:run"
 
 [tool.setuptools.packages.find]
 include = ["coordinator*", "shared*", "agent*", "processors*", "intake*"]

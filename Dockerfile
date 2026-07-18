@@ -28,8 +28,12 @@ COPY coordinator/ coordinator/
 COPY shared/ shared/
 COPY intake/ intake/
 COPY agent/ agent/
+# Both extras: the same image runs the coordinator (default CMD) and the
+# NAS-local INTAKE_COPY worker (data-intake-agent). The agent extra is Linux-
+# safe (httpx/psutil/Pillow) — pywinauto lives in the separate `automation`
+# extra and is never installed here.
 COPY processors/ processors/
-RUN pip install --no-cache-dir ".[coordinator]"
+RUN pip install --no-cache-dir ".[coordinator,agent]"
 
 COPY --from=webui /build/dist web/dist
 

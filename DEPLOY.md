@@ -123,6 +123,61 @@ sudo docker compose up -d --build
 Queue state is untouched (it's in `data/`), and agents tolerate the restart —
 they keep watching their running jobs and reconnect with backoff.
 
+### 1.6 Split intake — NAS copy worker + NAS helper (optional)
+
+By default the monolithic `INTAKE` job (copy + RINEX) runs on a Windows agent.
+The split runs the **copy on the NAS** (no SMB round-trip) and leaves only the
+Trimble RINEX step to Windows, and turns on the **NAS helper** that pre-fills
+the web form from the flight images.
+
+1. **Mounts + config.** The `intake-copy` service and the card/uploads mounts
+   are already in `docker-compose.yml` — adjust the USB path (`/volumeUSB1/...`)
+   to where your NAS mounts the card. In `data/coordinator.yaml` add the card
+   as a browse root and (optionally) the State Plane shapefile for EPSG:
+
+   ```yaml
+   browse_roots:
+     3dData: { path: /mnt/3dData, display: \\192.168.35.25\3dData }
+     ingest: { path: /mnt/ingest, display: /mnt/ingest }   # local: NAS-only
+   stateplane_shapefile: /app/coordinator/resources/NAD83SPCEPSG.shp
+   ```
+
+   For EPSG auto-detect, drop `NAD83SPCEPSG.shp` **and** its `.dbf` into
+   `coordinator/resources/` before `docker compose build` (absent, the EPSG
+   fields just stay blank). exiftool for the RTK scan is already in the image.
+
+2. **Provision the copy worker's node token** (like any agent):
+
+   ```bash
+   curl -s -X POST http://<nas-ip>:8443/api/v1/nodes \
+     -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"node_name":"NAS-COPY","capabilities":["INTAKE_COPY"]}'
+   ```
+
+   Put the returned token in `.env` as `DATA_INTAKE_COPY_TOKEN`, then
+   `docker compose up -d --build`. The worker registers as **NAS-COPY** and
+   shows up on the dashboard.
+
+3. **Path map.** The worker rewrites the projects-root UNC in job parameters to
+   its mount via `DATA_INTAKE_PATH_MAP` (set in compose, e.g.
+   `{"\\192.168.35.25\3dData":"/mnt/3dData"}`). Source folders are already
+   local `/mnt/ingest` paths and uploaded base data is `/data/uploads` — only
+   3dData needs mapping. Match the server IP to yours.
+
+4. **RINEX worker on Windows.** Provision a second node for the conversion half
+   and install the agent on the box that has `convertToRinex.exe` (can be the
+   Terra box):
+
+   ```
+   {"node_name":"WIN-RINEX","capabilities":["RINEX_CONVERT"]}
+   ```
+
+   Its `agent.yaml` sets `payload_paths.convert_to_rinex_exe`. A submission now
+   runs `INTAKE_COPY` (NAS) → `RINEX_CONVERT` (Windows) → the chains.
+
+To stay on the single-machine model instead, give one Windows agent the
+`INTAKE` capability and skip this section — both paths remain supported.
+
 ---
 
 ## Part 2 — Agents on the Windows machines
@@ -186,13 +241,17 @@ agent version, so stragglers are visible.
 
 ## Part 3 — First submission (checklist)
 
-1. Copy the flight card(s) to a path the **intake machine** can see (its
-   ingest share or local disk). The browser sends *paths*, not files.
-2. Web app → **Submit**: client, project, date (`16Jul2026` style), sensor,
-   source folder path(s), base data path(s), EPSG, chains → **Queue it**.
-3. Watch the project page: INTAKE runs first (folder tree → copy → RINEX),
-   then the chains fire machine by machine
-   (`TERRA_PPK → PIX4D_MATIC`, `TERRA_LIDAR → CYCLONE_CLASSIFY`).
+1. Make the flight data visible to the workers: plug the card into the NAS
+   (split intake reads `/mnt/ingest` directly) or copy it where the intake
+   machine can see it. The browser sends *paths* for the bulk data.
+2. Web app → **Submit**: client, project, date (`16Jul2026` style). Pick the
+   **source folder** — the NAS helper reads one image and pre-fills sensor,
+   date and EPSG (all editable). **Drop** the base data, targets csv and base
+   ECEF csv (these upload); set the chains → **Queue it**.
+3. Watch the project page. With the split: `INTAKE_COPY` (NAS: folder tree →
+   copy) → `RINEX_CONVERT` (Windows) → the chains fire machine by machine
+   (`TERRA_PPK → PIX4D_MATIC`, `TERRA_LIDAR → CYCLONE_CLASSIFY`). On the
+   single-machine model it's one `INTAKE` job instead of the first two.
    Failures land in the dashboard's attention panel with a Retry button and
    a failure bundle (screenshot + logs) on the workstation.
 
