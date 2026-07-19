@@ -35,7 +35,12 @@ services:
   # the Windows RINEX_CONVERT worker. Same image as the coordinator, run as the
   # agent with capability INTAKE_COPY. Provision its node first (POST /nodes ->
   # token) and put the token in .env — see DEPLOY.md "Split intake".
+  #
+  # Opt-in via a profile so a plain `docker compose up` runs ONLY the
+  # coordinator (and never blocks on this service's token). Start it with:
+  #   docker compose --profile intake-copy up -d
   intake-copy:
+    profiles: ["intake-copy"]
     build: .
     image: data-intake-coordinator:latest
     container_name: data-intake-copy
@@ -54,7 +59,10 @@ services:
       - DATA_INTAKE_COORDINATOR_URL=http://coordinator:8443
       - DATA_INTAKE_CAPABILITIES=INTAKE_COPY
       - DATA_INTAKE_WORK_ROOT=/var/lib/data-intake-agent
-      - DATA_INTAKE_NODE_TOKEN=${DATA_INTAKE_COPY_TOKEN:?provision a node token (POST /nodes) and set it in .env}
+      # Provision a node token (POST /nodes) and set DATA_INTAKE_COPY_TOKEN in
+      # .env before starting this service. Empty default so it never blocks the
+      # coordinator; the agent just can't authenticate until the token is set.
+      - DATA_INTAKE_NODE_TOKEN=${DATA_INTAKE_COPY_TOKEN:-}
       # Rewrite the projects-root UNC in job parameters to this container's
       # mount. Only 3dData needs mapping: source folders are addressed by their
       # local /mnt/ingest path (the ingest browse root's `display` is the mount,

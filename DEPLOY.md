@@ -159,9 +159,15 @@ the web form from the flight images.
      -d '{"node_name":"NAS-COPY","capabilities":["INTAKE_COPY"]}'
    ```
 
-   Put the returned token in `.env` as `DATA_INTAKE_COPY_TOKEN`, then
-   `docker compose up -d --build`. The worker registers as **NAS-COPY** and
-   shows up on the dashboard.
+   Put the returned token in `.env` as `DATA_INTAKE_COPY_TOKEN`, then start the
+   worker (it's behind a compose profile so a plain `up` runs only the
+   coordinator):
+
+   ```bash
+   sudo docker compose --profile intake-copy up -d --build
+   ```
+
+   The worker registers as **NAS-COPY** and shows up on the dashboard.
 
 3. **Path map.** The worker rewrites the projects-root UNC in job parameters to
    its mount via `DATA_INTAKE_PATH_MAP` (set in compose, e.g.
