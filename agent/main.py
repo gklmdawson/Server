@@ -168,11 +168,25 @@ def _current_user() -> str:
 def run() -> None:
     parser = argparse.ArgumentParser(description="Data Intake Agent")
     parser.add_argument("--config", default=None, help="path to agent YAML config")
+    parser.add_argument("--setup", action="store_true",
+                        help="open the setup window to enter the coordinator URL "
+                             "and node token, then exit")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+
+    # Setup mode: a local window to enter the URL/token — runnable before the
+    # box is fully configured (no node_name/token required yet).
+    if args.setup:
+        from agent.setup import run_setup
+        run_setup(cfg, args.config)
+        return
+
     if not cfg.node_name:
-        raise SystemExit("agent config must set node_name")
+        raise SystemExit("agent config must set node_name (or run --setup)")
+    if not cfg.token:
+        raise SystemExit("no node token found — run 'DataIntakeAgent.exe --setup' "
+                         "to enter it, or set DATA_INTAKE_NODE_TOKEN")
     setup_logging(cfg)
 
     registry = build_registry(cfg, cfg.capabilities)

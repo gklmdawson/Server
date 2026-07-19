@@ -247,6 +247,25 @@ worker is provisioned the same way — see Part 1.6.
 4. Log the processing account in (auto-logon recommended). The machine shows
    up on the **Machines** tab within seconds.
 
+**Entering the token without editing files (recommended):** run
+
+```
+DataIntakeAgent.exe --setup
+```
+
+This opens a small window to enter the **coordinator URL** and **node token**,
+**Test connection** (it does a live sync and shows connected / token-rejected /
+unreachable), and **Save**. The values are written to `agent_setup.json` in the
+work root and take precedence over the YAML — so token entry needs no `setx`,
+no admin, and re-pasting a rotated token is a five-second fix. Token resolution
+order is: explicit `token` in YAML → `agent_setup.json` / `token_file` → the
+`DATA_INTAKE_NODE_TOKEN` env var.
+
+**Non-admin machines:** `install_agent.ps1` needs admin (Program Files +
+Scheduled Task). Without it, install into a user-writable folder, set
+`work_root` there, run `--setup` to save the token, and add a Startup-folder
+shortcut to `DataIntakeAgent.exe --config <path>` for at-logon launch.
+
 **Agent updates later:** build the new EXE to the dist share, run
 `scripts\update_agent.ps1` on each box. The dashboard shows every node's
 agent version, so stragglers are visible.

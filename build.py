@@ -52,7 +52,9 @@ BUILDS = {
     "agent": {
         "name":   "DataIntakeAgent",
         "script": SCRIPT_DIR / "agent" / "main.py",
-        "extra":  [],
+        # tkinter is imported lazily by --setup, so name it explicitly for
+        # PyInstaller's static analysis to bundle the setup window.
+        "extra":  ["--hidden-import", "tkinter", "--hidden-import", "tkinter.ttk"],
     },
     "coordinator": {
         "name":   "DataIntakeCoordinator",

@@ -18,7 +18,10 @@ import yaml
 class AgentConfig:
     node_name: str = ""
     coordinator_url: str = "http://127.0.0.1:8443"
-    token: str = ""                       # discouraged; prefer token_env
+    token: str = ""                       # discouraged; prefer token_file/env
+    # The node token is resolved in this order: explicit `token` above, then
+    # `token_file` (written by the --setup window), then the `token_env` var.
+    token_file: str = ""                  # default: <work_root>/node_token
     token_env: str = "DATA_INTAKE_NODE_TOKEN"
     capabilities: list[str] = field(default_factory=list)
     work_root: str = "C:/ProgramData/DataIntakeAgent"
@@ -68,8 +71,57 @@ class AgentConfig:
         self.resolve_token()
 
     def resolve_token(self) -> None:
+        """Fill self.token from token_file then token_env if not already set."""
+        if not self.token:
+            path = self.token_file or str(self.work_root_path / "node_token")
+            try:
+                self.token = Path(path).read_text(encoding="utf-8").strip()
+            except OSError:
+                pass
         if not self.token and self.token_env:
             self.token = os.environ.get(self.token_env, "")
+
+    # --- UI-managed local settings (the --setup window) ---------------------
+
+    @property
+    def settings_file(self) -> Path:
+        """Where the --setup window persists coordinator_url / node_name / token.
+        Lives in the work root so a non-admin user owns it."""
+        return self.work_root_path / "agent_setup.json"
+
+    def apply_local_settings(self) -> None:
+        """Overlay values the operator saved in the --setup window. These win
+        over the YAML (the operator set them at runtime); env still wins over
+        these, and containers never have this file."""
+        p = self.settings_file
+        if not p.is_file():
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if data.get("coordinator_url"):
+            self.coordinator_url = str(data["coordinator_url"]).strip()
+        if data.get("node_name"):
+            self.node_name = str(data["node_name"]).strip()
+        if data.get("token"):
+            self.token = str(data["token"]).strip()
+
+    def save_local_settings(self, coordinator_url: str, node_name: str,
+                            token: str) -> Path:
+        """Persist the setup fields to settings_file (creating the work root)."""
+        self.work_root_path.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "coordinator_url": coordinator_url.strip(),
+            "node_name": node_name.strip(),
+            "token": token.strip(),
+        }
+        self.settings_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # Reflect immediately in this instance.
+        self.coordinator_url = payload["coordinator_url"] or self.coordinator_url
+        self.node_name = payload["node_name"] or self.node_name
+        self.token = payload["token"] or self.token
+        return self.settings_file
 
     # --- path translation ---------------------------------------------------
 
@@ -119,9 +171,16 @@ def load_config(path: Optional[str] = None) -> AgentConfig:
     DATA_INTAKE_NODE_NAME et al. must then be set."""
     candidates = [path, os.environ.get("DATA_INTAKE_AGENT_CONFIG"),
                   "agent.yaml", "config/agent.yaml"]
+    cfg = None
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
-            return AgentConfig.from_yaml(candidate)
-    cfg = AgentConfig()
-    cfg.apply_env()
+            cfg = AgentConfig.from_yaml(candidate)
+            break
+    if cfg is None:
+        cfg = AgentConfig()
+        cfg.apply_env()
+    # Overlay what the operator saved in the --setup window, then (re)resolve
+    # the token so token_file / token_env still fill in when unset.
+    cfg.apply_local_settings()
+    cfg.resolve_token()
     return cfg
