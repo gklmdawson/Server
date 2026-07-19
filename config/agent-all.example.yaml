@@ -1,0 +1,53 @@
+# Data Intake Agent — ALL capabilities declared (one deployment, toggle in UI).
+#
+# Copy to agent.yaml next to DataIntakeAgent.exe. This declares every processor
+# so you can turn features on/off later from the dashboard's Machines tab
+# (effective = declared here ∩ enabled there). You CANNOT enable a capability
+# in the UI that the agent never declared — hence declaring them all now.
+#
+# Reality checks for a single all-in-one box:
+#   * One job runs at a time per machine (structural) — a box that does
+#     everything just serializes its work.
+#   * Licences/foreground focus: Terra, Pix4Dmatic and Cyclone are normally on
+#     their own boxes. Declaring them here is fine; only ENABLE the ones this
+#     machine is actually licensed for and has the tools installed.
+#   * Desktop preflight: because Terra/Pix4D are GUI (requires_desktop), the
+#     agent runs a desktop check (DPI 150 + resolution) and pauses ALL work
+#     until it passes — even RINEX. See require_dpi_150 below.
+
+node_name: WIN-01
+coordinator_url: http://192.168.35.25:8443
+token_env: DATA_INTAKE_NODE_TOKEN
+
+# Everything this machine CAN run. Trim if you truly never want a type here.
+capabilities:
+  - RINEX_CONVERT       # the split intake's Windows half (Trimble conversion)
+  - TERRA_PPK
+  - TERRA_LIDAR
+  - PIX4D_MATIC
+  - CYCLONE_CLASSIFY
+
+work_root: C:/ProgramData/DataIntakeAgent
+
+# Desktop preflight (applies once a GUI capability — Terra/Pix4D — is declared).
+#   * While you are only running RINEX/Cyclone (CLI), keep these relaxed so the
+#     box isn't gated: require_dpi_150 false, expected_resolution [].
+#   * BEFORE enabling Terra or Pix4D in the UI, set the box to 150% DPI and set
+#     require_dpi_150: true (the pywinauto clicks are calibrated for it), and
+#     optionally pin expected_resolution to the calibrated display.
+require_dpi_150: false
+expected_resolution: []        # e.g. [3840, 2160]; empty disables the check
+
+# Only the keys for capabilities you ENABLE need to point at real files; a
+# missing tool fails that job type's preflight, it does not pause the agent.
+payload_paths:
+  convert_to_rinex_exe: C:/Program Files (x86)/Trimble/convertToRINEX/convertToRinex.exe
+  dji_automate_ppk: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_PPK.exe
+  dji_automate_ui: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_UI.exe
+  pix4d_automate: Z:/Survey/UT/_Scripts/Automate UI/dist/PIX4D_AUTOMATE.exe
+  cyclone_3dr_exe: C:/Program Files/Leica Geosystems/Cyclone 3DR/3DR.exe
+  cyclone_classify_script: Z:/Survey/UT/_Scripts/3DR/LAZ-Classify/ClassifyLAZ.js
+
+keep_job_dirs_days: 7
+request_timeout_seconds: 15
+log_level: INFO
