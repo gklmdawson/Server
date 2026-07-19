@@ -315,9 +315,14 @@ takes nothing new), then **Enable** when done. The Cyclone box handles the
 `docker compose up -d --build`, repoint each agent's `coordinator_url`
 (unnecessary if you used a DNS name).
 
-**Rotate a token** — re-POST `/api/v1/nodes` with the same `node_name` (new
-token, old one dies); re-run `install_agent.ps1` with it. For the admin
-token, edit `.env` and `docker compose up -d`.
+**Provisioning is idempotent** — re-POSTing `/api/v1/nodes` with an existing
+`node_name` updates its capabilities but leaves the token alone (returns
+`token: null`), so a repeated setup call can't silently break a working node.
+**Rotate a token** only on purpose: `POST /api/v1/nodes?rotate=true` with the
+same `node_name` issues a new token (the old one stops working) — then update
+the box via the agent's `--setup` window (or re-run `install_agent.ps1`). A
+token never expires on its own; only an explicit rotation changes it. For the
+admin token, edit `.env` and `docker compose up -d`.
 
 ---
 

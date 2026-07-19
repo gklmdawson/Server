@@ -18,9 +18,9 @@ def secure_client(tmp_path):
 ADMIN = {"Authorization": "Bearer admin-secret"}
 
 
-def _create_node(client, name="N1", caps=("MOCK",)) -> str:
-    r = client.post("/api/v1/nodes",
-                    json={"node_name": name, "capabilities": list(caps)},
+def _create_node(client, name="N1", caps=("MOCK",), rotate=False) -> str:
+    url = "/api/v1/nodes" + ("?rotate=true" if rotate else "")
+    r = client.post(url, json={"node_name": name, "capabilities": list(caps)},
                     headers=ADMIN)
     assert r.status_code == 201, r.text
     return r.json()["token"]
@@ -39,9 +39,32 @@ def test_node_token_flow(secure_client):
 
 def test_token_rotation_invalidates_old_token(secure_client):
     old = _create_node(secure_client)
-    new = _create_node(secure_client)  # same name -> rotates
+    new = _create_node(secure_client, rotate=True)  # explicit rotation
+    assert new and new != old
     assert sync(secure_client, node="N1", token=old).status_code == 401
     assert sync(secure_client, node="N1", token=new).status_code == 200
+
+
+def test_reprovision_without_rotate_keeps_token(secure_client):
+    """Re-POSTing the same node is idempotent — the working token survives."""
+    old = _create_node(secure_client)
+    r = secure_client.post("/api/v1/nodes",
+                           json={"node_name": "N1", "capabilities": ["MOCK", "TERRA_PPK"]},
+                           headers=ADMIN)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["token"] is None
+    assert body["rotated"] is False and body["created"] is False
+    # Capabilities were updated by the re-POST (checked before a sync, which
+    # would overwrite them from the agent's own declaration).
+    assert set(client_nodes(secure_client)["N1"]["capabilities"]) == {"MOCK", "TERRA_PPK"}
+    # And the original token still works.
+    assert sync(secure_client, node="N1", token=old).status_code == 200
+
+
+def client_nodes(client):
+    nodes = client.get("/api/v1/nodes", headers=ADMIN).json()["nodes"]
+    return {n["node_name"]: n for n in nodes}
 
 
 def test_admin_endpoints_require_token(secure_client):

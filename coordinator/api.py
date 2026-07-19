@@ -852,24 +852,41 @@ def retry_job(job_uuid: str, request: Request,
 # ---------------------------------------------------------------------------
 
 @router.post("/nodes", status_code=201)
-def create_node(body: NodeCreate, request: Request,
+def create_node(body: NodeCreate, request: Request, rotate: bool = False,
                 session: Session = Depends(get_session),
                 _admin: None = Depends(require_admin)) -> dict[str, Any]:
-    """Create a node (or rotate an existing node's token). The token is
-    returned exactly once — only its hash is stored."""
-    token = secrets.token_urlsafe(32)
+    """Create a node and issue its token (returned exactly once — only its hash
+    is stored, so a token can never be read back).
+
+    Re-POSTing an existing node is idempotent by default: it updates the
+    declared capabilities but leaves the token untouched (`token: null`), so a
+    repeated provisioning call can't silently invalidate a working node. Pass
+    `?rotate=true` to deliberately issue a NEW token (the old one stops working).
+    """
     node = session.execute(
         select(Node).where(Node.node_name == body.node_name)
     ).scalar_one_or_none()
-    rotated = node is not None
+    created = node is None
     if node is None:
         node = Node(node_name=body.node_name)
         session.add(node)
-    node.token_hash = _hash_token(token)
+
     if body.capabilities:
         node.capabilities_json = body.capabilities
+
+    # Issue a token only for a brand-new node, or an explicit rotation.
+    if created or rotate:
+        token = secrets.token_urlsafe(32)
+        node.token_hash = _hash_token(token)
+        session.flush()
+        return {"node_name": node.node_name, "token": token,
+                "rotated": not created, "created": created}
+
     session.flush()
-    return {"node_name": node.node_name, "token": token, "rotated": rotated}
+    return {"node_name": node.node_name, "token": None, "rotated": False,
+            "created": False,
+            "detail": "node already exists; token unchanged. "
+                      "Pass ?rotate=true to issue a new token."}
 
 
 def _node_summary(node: Node, cfg: CoordinatorConfig, now) -> dict[str, Any]:
