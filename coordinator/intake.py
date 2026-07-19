@@ -27,6 +27,20 @@ MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 
 SENSORS = ("M3E", "P1", "L2", "L3", "R3Pro", "R3ProMobile")
 
+# Cyclone 3DR classification models offered by the LiDAR chain's model dropdown.
+# Kept in sync with classify_3dr.CLASSIFICATION_MODELS, but duplicated here so
+# the coordinator never has to import that PyQt-dependent GUI module. Config's
+# intake_defaults.classify_models overrides this when present.
+CLASSIFY_MODELS = (
+    "BLK Mobile Filter People 2.0",
+    "Heavy Construction UAV 2.0",
+    "Indoor 2.2",
+    "Indoor Construction Site 1.3",
+    "Outdoor TLS 2.1",
+    "Plant 2.0",
+    "Road 1.0",
+)
+
 PHOTO_TEMPLATE = "photo_ppk"
 LIDAR_TEMPLATE = "lidar"
 

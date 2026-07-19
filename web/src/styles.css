@@ -785,6 +785,44 @@ dialog.picker footer {
   outline-offset: -2px;
 }
 
+/* ECEF: text field + Browse button on one row. */
+.ecef-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ecef-input-row input[type="text"] {
+  flex: 1;
+  border: 1px solid var(--baseline);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.ecef-input-row .btn.small {
+  flex: 0 0 auto;
+}
+
+/* EPSG code -> human-readable name, shown under the code field. */
+.epsg-name {
+  display: block;
+  margin-top: 4px;
+}
+
+/* Targets csv TLT extraction preview (neutral; red only on error). */
+.tlt-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.tlt-note.tlt-err {
+  color: var(--serious);
+}
+
 .probe-banner .btn.small {
   margin-left: 6px;
 }

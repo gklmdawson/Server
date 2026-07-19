@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
 import { PathInput, PathLines, normalizePath } from "./FilePicker.jsx";
 import { UploadField } from "./UploadField.jsx";
@@ -27,6 +27,7 @@ function splitLines(text) {
 
 const LIDAR = ["L2", "L3"];
 const BASE_DATA_EXTS = [".t02", ".t04", ".t0b"];
+const DEFAULT_ROOT_PATH = "\\\\192.168.35.25\\3dData";
 
 function chainDefaults(sensor) {
   return {
@@ -36,9 +37,9 @@ function chainDefaults(sensor) {
 }
 
 export default function Submit({ onSubmitted }) {
-  const [options, setOptions] = useState({ sensors: [], defaults: {} });
+  const [options, setOptions] = useState({ sensors: [], defaults: {}, epsg_names: {} });
   const [form, setForm] = useState({
-    root_path: "",
+    root_path: DEFAULT_ROOT_PATH,
     client: "",
     project: "",
     date: todayDate(),
@@ -56,6 +57,7 @@ export default function Submit({ onSubmitted }) {
   });
   const [baseUploads, setBaseUploads] = useState([]); // [{name,size,stored_path,error}]
   const [gcpUpload, setGcpUpload] = useState([]);      // 0 or 1 item
+  const [tltInfo, setTltInfo] = useState(null);        // TLT extraction preview
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -70,6 +72,7 @@ export default function Submit({ onSubmitted }) {
   const [ecefBusy, setEcefBusy] = useState(false);
   const [ecefOver, setEcefOver] = useState(false);
   const [ecefErr, setEcefErr] = useState(null);
+  const ecefFileRef = useRef(null);
 
   useEffect(() => {
     api
@@ -83,7 +86,12 @@ export default function Submit({ onSubmitted }) {
         const d = opts.defaults || {};
         setForm((f) => ({
           ...f,
-          root_path: f.root_path || d.root_path || "",
+          // Config may override the built-in default; a value the operator has
+          // already typed always wins.
+          root_path:
+            f.root_path && f.root_path !== DEFAULT_ROOT_PATH
+              ? f.root_path
+              : d.root_path || DEFAULT_ROOT_PATH,
           epsg_h: f.epsg_h || d.epsg_h || "",
           epsg_v: f.epsg_v || d.epsg_v || "",
           classify_model:
@@ -94,10 +102,29 @@ export default function Submit({ onSubmitted }) {
   }, []);
 
   const isLidar = LIDAR.includes(form.sensor_type);
+  const epsgNames = options.epsg_names || {};
+  const epsgName = (code) => epsgNames[String(code || "").trim()] || "";
 
   const set = (key) => (e) => {
     const value = e.target.type === "checkbox" ? e.target.checked : e.target.value;
     setForm((f) => ({ ...f, [key]: value }));
+  };
+
+  // Targets csv: after upload, preview the TLT extraction (keeps only the rows
+  // whose 5th column is "TLT" -> SINGLE_TLT.csv) so the operator can confirm the
+  // count. The full file is still what feeds both chains.
+  const onGcpItems = (items) => {
+    setGcpUpload(items);
+    const stored = items.find((it) => it.stored_path)?.stored_path;
+    if (!stored) {
+      setTltInfo(null);
+      return;
+    }
+    setTltInfo({ busy: true });
+    api
+      .extractTlt(stored)
+      .then((r) => setTltInfo(r))
+      .catch((err) => setTltInfo({ error: err.message || "TLT extraction failed" }));
   };
 
   const setSensor = (e) => {
@@ -313,7 +340,11 @@ export default function Submit({ onSubmitted }) {
                   {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
                   {probeInfo.date ? `, ${probeInfo.date}` : ""}
                   {probeInfo.epsg_h
-                    ? `, EPSG ${probeInfo.epsg_h}/${probeInfo.epsg_v || "?"}`
+                    ? `, EPSG ${probeInfo.epsg_h}${
+                        epsgName(probeInfo.epsg_h) ? ` (${epsgName(probeInfo.epsg_h)})` : ""
+                      }/${probeInfo.epsg_v || "?"}${
+                        epsgName(probeInfo.epsg_v) ? ` (${epsgName(probeInfo.epsg_v)})` : ""
+                      }`
                     : ", no EPSG (enter manually)"}{" "}
                   from {probeInfo.image_count || 0} image
                   {probeInfo.image_count === 1 ? "" : "s"}. Everything below is editable.
@@ -374,15 +405,35 @@ export default function Submit({ onSubmitted }) {
             <label>
               Corrected base position — ECEF X, Y, Z{" "}
               <span className="hint">
-                optional; type metres or drop a Point ID,X,Y,Z csv
+                optional; type metres, or drop / browse a Point ID,X,Y,Z csv
               </span>
             </label>
-            <input
-              type="text"
-              placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
-              value={form.ecef}
-              onChange={set("ecef")}
-            />
+            <div className="ecef-input-row">
+              <input
+                type="text"
+                placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
+                value={form.ecef}
+                onChange={set("ecef")}
+              />
+              <input
+                ref={ecefFileRef}
+                type="file"
+                accept=".csv"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  if (e.target.files?.length) takeEcefFile(e.target.files[0]);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="btn small"
+                disabled={ecefBusy}
+                onClick={() => ecefFileRef.current?.click()}
+              >
+                Browse…
+              </button>
+            </div>
             {ecefBusy && <div className="drop-note">Parsing ECEF csv…</div>}
             {ecefErr && <div className="drop-note">{ecefErr}</div>}
           </div>
@@ -416,21 +467,39 @@ export default function Submit({ onSubmitted }) {
           </label>
 
           <div className="row3">
-            <UploadField
-              label="Targets / GCP csv"
-              hint="TAT file — uploaded to the NAS"
-              accept={[".csv"]}
-              uploader={api.uploadIntakeFile}
-              items={gcpUpload}
-              onItems={setGcpUpload}
-            />
+            <div>
+              <UploadField
+                label="Targets / GCP csv"
+                hint="TAT file — uploaded to the NAS"
+                accept={[".csv"]}
+                uploader={api.uploadIntakeFile}
+                items={gcpUpload}
+                onItems={onGcpItems}
+              />
+              {tltInfo && (
+                <div className={`tlt-note ${tltInfo.error ? "tlt-err" : ""}`}>
+                  {tltInfo.busy && "Extracting TLT rows…"}
+                  {tltInfo.error && `TLT extraction: ${tltInfo.error}`}
+                  {tltInfo.tlt_count != null &&
+                    `Extracted ${tltInfo.tlt_count} TLT of ${tltInfo.total_rows} target row${
+                      tltInfo.total_rows === 1 ? "" : "s"
+                    } → SINGLE_TLT.csv (LiDAR uses TLT only; the full file feeds Pix4D).`}
+                </div>
+              )}
+            </div>
             <div className="field">
               <label>EPSG horizontal</label>
               <input type="text" value={form.epsg_h} onChange={set("epsg_h")} />
+              {epsgName(form.epsg_h) && (
+                <span className="hint epsg-name">{epsgName(form.epsg_h)}</span>
+              )}
             </div>
             <div className="field">
               <label>EPSG vertical</label>
               <input type="text" value={form.epsg_v} onChange={set("epsg_v")} />
+              {epsgName(form.epsg_v) && (
+                <span className="hint epsg-name">{epsgName(form.epsg_v)}</span>
+              )}
             </div>
           </div>
 

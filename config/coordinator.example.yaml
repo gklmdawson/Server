@@ -37,11 +37,20 @@ job_max_runtime_minutes:
 
 # Defaults the web intake form pre-fills (GET /api/v1/intake/options).
 intake_defaults:
-  root_path: Z:/Survey/Projects
+  root_path: \\192.168.35.25\3dData
   epsg_h: ""
   epsg_v: ""
+  # Cyclone 3DR classification models offered by the LiDAR chain dropdown.
+  # Omit this key to fall back to the coordinator's built-in model list
+  # (coordinator/intake.py: CLASSIFY_MODELS).
   classify_models:
+    - BLK Mobile Filter People 2.0
     - Heavy Construction UAV 2.0
+    - Indoor 2.2
+    - Indoor Construction Site 1.3
+    - Outdoor TLS 2.1
+    - Plant 2.0
+    - Road 1.0
 
 # Roots the web form's Browse buttons can explore (GET /api/v1/browse).
 # `path` is where the COORDINATOR sees the share (in Docker: a volume mount,

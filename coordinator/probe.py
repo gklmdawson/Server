@@ -318,6 +318,33 @@ def parse_base_ecef_csv(path: str) -> tuple[float, float, float]:
 
 
 # ---------------------------------------------------------------------------
+# Targets CSV  (keep only the TLT rows -> SINGLE_TLT.csv)
+# ---------------------------------------------------------------------------
+
+def extract_tlt_rows(src: str, dest: str) -> tuple[int, int]:
+    """Filter a targets/GCP CSV down to its TLT rows and write them to `dest`.
+
+    A TLT row is one whose 5th column (index 4) equals "TLT" (case-insensitive),
+    matching the extraction the Terra-LiDAR automation does at runtime
+    (PyAutomateDJI._extract_tlt_csv). Returns (tlt_count, total_rows). Raises
+    ValueError when the source has no TLT rows."""
+    total = 0
+    tlt_rows: list[list[str]] = []
+    with open(src, newline="", encoding="utf-8-sig") as fh:
+        for row in csv.reader(fh):
+            if not row or not any(c.strip() for c in row):
+                continue
+            total += 1
+            if len(row) >= 5 and row[4].strip().upper() == "TLT":
+                tlt_rows.append(row)
+    if not tlt_rows:
+        raise ValueError("no TLT rows (column 5 == 'TLT') found in the targets csv")
+    with open(dest, "w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(tlt_rows)
+    return len(tlt_rows), total
+
+
+# ---------------------------------------------------------------------------
 # RTK coverage  (opt-in exiftool scan)
 # ---------------------------------------------------------------------------
 

@@ -67,3 +67,37 @@ def test_parse_ecef_valid_and_invalid(helper_client):
     bad = b"a,b,c,d\n1,2,3,4\n"
     r = client.post("/api/v1/intake/parse-ecef", files={"file": ("bad.csv", bad, "text/csv")})
     assert r.status_code == 400
+
+
+def test_extract_tlt_from_uploaded_targets(helper_client):
+    client, _ = helper_client
+    # Upload a targets csv, then preview the TLT extraction on the stored copy.
+    targets = b"p1,1,2,3,TLT\np2,4,5,6,CHK\np3,7,8,9,tlt\n"
+    up = client.post("/api/v1/intake/upload",
+                     files={"file": ("targets.csv", targets, "text/csv")})
+    assert up.status_code == 201, up.text
+    stored = up.json()["stored_path"]
+
+    r = client.post("/api/v1/intake/extract-tlt", json={"stored_path": stored})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["tlt_count"] == 2 and body["total_rows"] == 3
+    assert os.path.basename(body["stored_path"]) == "SINGLE_TLT.csv"
+    assert os.path.isfile(body["stored_path"])
+
+
+def test_extract_tlt_no_tlt_rows_is_400(helper_client):
+    client, _ = helper_client
+    up = client.post("/api/v1/intake/upload",
+                     files={"file": ("targets.csv", b"p1,1,2,3,CHK\n", "text/csv")})
+    stored = up.json()["stored_path"]
+    r = client.post("/api/v1/intake/extract-tlt", json={"stored_path": stored})
+    assert r.status_code == 400
+
+
+def test_extract_tlt_rejects_path_outside_uploads(helper_client, tmp_path):
+    client, _ = helper_client
+    outside = tmp_path / "outside.csv"
+    outside.write_text("p1,1,2,3,TLT\n")
+    r = client.post("/api/v1/intake/extract-tlt", json={"stored_path": str(outside)})
+    assert r.status_code == 400

@@ -34,7 +34,9 @@ from coordinator.assign import (
 )
 from coordinator.config import CoordinatorConfig
 from coordinator.db import Job, JobEvent, Node, Project, iso_z, log_event, utcnow
+from coordinator.epsg_names import EPSG_NAMES
 from coordinator.intake import (
+    CLASSIFY_MODELS as INTAKE_CLASSIFY_MODELS,
     SENSORS as INTAKE_SENSORS,
     IntakeValidationError,
     build_job_specs,
@@ -499,8 +501,18 @@ def submit_intake(body: IntakeSubmit, request: Request,
 @router.get("/intake/options")
 def intake_options(request: Request,
                    cfg: CoordinatorConfig = Depends(get_cfg)) -> dict[str, Any]:
-    """Form-population data: valid sensors and shop defaults from config."""
-    return {"sensors": list(INTAKE_SENSORS), "defaults": cfg.intake_defaults or {}}
+    """Form-population data: valid sensors, shop defaults, EPSG name lookup, and
+    the Cyclone 3DR classification models the LiDAR dropdown offers."""
+    defaults = dict(cfg.intake_defaults or {})
+    # Always give the form a classification-model list to build its dropdown
+    # from; config may override, otherwise fall back to the known 3DR models.
+    if not defaults.get("classify_models"):
+        defaults["classify_models"] = list(INTAKE_CLASSIFY_MODELS)
+    return {
+        "sensors": list(INTAKE_SENSORS),
+        "defaults": defaults,
+        "epsg_names": EPSG_NAMES,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +687,39 @@ async def intake_parse_ecef(request: Request, file: UploadFile = File(...),
     finally:
         os.remove(tmp_path)
     return {"ecef": [x, y, z]}
+
+
+@router.post("/intake/extract-tlt")
+def intake_extract_tlt(request: Request, body: dict[str, Any],
+                       cfg: CoordinatorConfig = Depends(get_cfg),
+                       _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Preview the TLT extraction for an already-uploaded targets CSV.
+
+    Given the `stored_path` returned by /intake/upload, keep only the TLT rows
+    (column 5 == "TLT" — same rule the Terra-LiDAR automation applies) and write
+    them to SINGLE_TLT.csv beside the upload. The full targets file is left
+    untouched and still feeds both chains; this only surfaces the TLT count to
+    the operator and saves the extracted csv for reference."""
+    from coordinator import probe as probe_mod
+
+    stored_path = str(body.get("stored_path") or "").strip()
+    if not stored_path:
+        raise HTTPException(status_code=400, detail="stored_path is required")
+    # Jail: only files under the uploads volume may be read/written.
+    upload_base = os.path.realpath(cfg.upload_dir)
+    real = os.path.realpath(stored_path)
+    if real != upload_base and not real.startswith(upload_base + os.sep):
+        raise HTTPException(status_code=400, detail="stored_path escapes the uploads dir")
+    if not os.path.isfile(real):
+        raise HTTPException(status_code=404, detail="uploaded file not found")
+
+    dest = os.path.join(os.path.dirname(real), "SINGLE_TLT.csv")
+    try:
+        tlt_count, total_rows = probe_mod.extract_tlt_rows(real, dest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"tlt_count": tlt_count, "total_rows": total_rows,
+            "stored_path": os.path.abspath(dest)}
 
 
 @router.post("/jobs", status_code=201)

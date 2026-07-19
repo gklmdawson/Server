@@ -148,5 +148,11 @@ def test_chain_is_gated_on_split_intake_success(client):
 def test_intake_options_endpoint(client):
     r = client.get("/api/v1/intake/options")
     assert r.status_code == 200
-    assert "L3" in r.json()["sensors"]
-    assert isinstance(r.json()["defaults"], dict)
+    data = r.json()
+    assert "L3" in data["sensors"]
+    assert isinstance(data["defaults"], dict)
+    # The LiDAR model dropdown always gets a non-empty list to build from, and
+    # the form gets an EPSG code -> name lookup for the code fields.
+    assert data["defaults"]["classify_models"]
+    assert data["epsg_names"].get("6625") == "Utah Central"
+    assert data["epsg_names"].get("6360") == "NAVD88 height (ftUS)"
