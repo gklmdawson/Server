@@ -110,9 +110,9 @@ export default function Submit({ onSubmitted }) {
     setForm((f) => ({ ...f, [key]: value }));
   };
 
-  // Targets csv: after upload, preview the TLT extraction (keeps only the rows
-  // whose 5th column is "TLT" -> SINGLE_TLT.csv) so the operator can confirm the
-  // count. The full file is still what feeds both chains.
+  // Targets csv: after uploading the all-points csv, preview how it splits by
+  // point type. Intake writes SINGLE_TLT.csv (TLT only, for LiDAR) and TAT.csv
+  // (TAT + TLT, for Pix4D) into the project folder; this just confirms counts.
   const onGcpItems = (items) => {
     setGcpUpload(items);
     const stored = items.find((it) => it.stored_path)?.stored_path;
@@ -122,9 +122,9 @@ export default function Submit({ onSubmitted }) {
     }
     setTltInfo({ busy: true });
     api
-      .extractTlt(stored)
+      .targetsSummary(stored)
       .then((r) => setTltInfo(r))
-      .catch((err) => setTltInfo({ error: err.message || "TLT extraction failed" }));
+      .catch((err) => setTltInfo({ error: err.message || "could not read targets csv" }));
   };
 
   const setSensor = (e) => {
@@ -470,7 +470,7 @@ export default function Submit({ onSubmitted }) {
             <div>
               <UploadField
                 label="Targets / GCP csv"
-                hint="TAT file — uploaded to the NAS"
+                hint="all points (TAT, TLT, misc) — split at intake"
                 accept={[".csv"]}
                 uploader={api.uploadIntakeFile}
                 items={gcpUpload}
@@ -478,12 +478,13 @@ export default function Submit({ onSubmitted }) {
               />
               {tltInfo && (
                 <div className={`tlt-note ${tltInfo.error ? "tlt-err" : ""}`}>
-                  {tltInfo.busy && "Extracting TLT rows…"}
-                  {tltInfo.error && `TLT extraction: ${tltInfo.error}`}
+                  {tltInfo.busy && "Reading targets csv…"}
+                  {tltInfo.error && `Targets csv: ${tltInfo.error}`}
                   {tltInfo.tlt_count != null &&
-                    `Extracted ${tltInfo.tlt_count} TLT of ${tltInfo.total_rows} target row${
-                      tltInfo.total_rows === 1 ? "" : "s"
-                    } → SINGLE_TLT.csv (LiDAR uses TLT only; the full file feeds Pix4D).`}
+                    `${tltInfo.total_rows} point${tltInfo.total_rows === 1 ? "" : "s"}: ` +
+                      `${tltInfo.tlt_count} TLT → SINGLE_TLT.csv (LiDAR), ` +
+                      `${tltInfo.tat_count} TAT+TLT → TAT.csv (Pix4D). ` +
+                      "Both saved to the project folder at intake."}
                 </div>
               )}
             </div>

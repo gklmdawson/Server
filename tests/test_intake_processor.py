@@ -109,6 +109,24 @@ def test_full_run_builds_tree_copies_and_converts(cfg, tmp_path):
     assert calls, "expected progress reports"
 
 
+def test_run_splits_targets_into_tlt_and_tat(cfg, tmp_path):
+    src, base = make_sources(tmp_path)
+    targets = tmp_path / "uploads" / "all_points.csv"
+    targets.parent.mkdir(parents=True, exist_ok=True)
+    targets.write_text("p1,1,2,3,TLT\np2,4,5,6,TAT\np3,7,8,9,MISC\np4,1,1,1,tlt\n")
+    ctx = make_ctx(tmp_path, base_params(tmp_path, src, base,
+                                         targets_upload=str(targets)))
+    validation, _ = run(IntakeProcessor(cfg), ctx)
+    assert validation.ok, validation.errors
+
+    date_dir = tmp_path / "nas" / "Brahma" / "SilverPeak" / "10Jul2026"
+    tlt = (date_dir / "SINGLE_TLT.csv").read_text().splitlines()
+    tat = (date_dir / "TAT.csv").read_text().splitlines()
+    # SINGLE_TLT.csv = TLT only (p1, p4); TAT.csv = TAT + TLT (p1, p2, p4).
+    assert [r.split(",")[0] for r in tlt] == ["p1", "p4"]
+    assert [r.split(",")[0] for r in tat] == ["p1", "p2", "p4"]
+
+
 def test_rerun_skips_existing_files(cfg, tmp_path):
     src, base = make_sources(tmp_path)
     ctx = make_ctx(tmp_path, base_params(tmp_path, src, base))

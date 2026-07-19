@@ -92,8 +92,13 @@ this doc wins.
   (already used by `classify_3dr.py`).
 * Cyclone 3DR is **CLI automation, not GUI** (`3DR.exe --Script=… --scriptAutorun --silent`).
 * Coordinator host: **192.168.35.67 — the Pix4D machine** (dual role: coordinator + agent).
-* `SINGLE_TLT.csv` is **Terra-LiDAR-only** (that script extracts TLT rows itself).
-  **Pix4D consumes the TAT csv directly** — no extraction step anywhere else.
+* The operator uploads **one all-points targets csv** (TAT + TLT + misc).
+  `INTAKE_COPY` splits it in the project folder into `SINGLE_TLT.csv` (TLT rows
+  only — the LiDAR/Terra input) and `TAT.csv` (TAT + TLT rows — the Pix4D input);
+  misc points are dropped from both. The chains read these prepared files from
+  the share (`gcp_path`→`SINGLE_TLT.csv`, `tat_path`→`TAT.csv`). The Terra-LiDAR
+  script still re-filters TLT at runtime, so feeding it `SINGLE_TLT.csv` is
+  idempotent. Point type lives in column 5 of each row.
 * Pix4Dmatic progress/completion comes from **tailing its logs** (rich stage +
   completion logging); the **orthomosaic is the final export** to validate; the
   automation then **saves the project and closes Pix4Dmatic**.

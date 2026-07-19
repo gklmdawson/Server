@@ -56,13 +56,16 @@ def test_parameters_match_handle_complete_contract(client):
     # Single source folder -> DJI gets that specific flight subfolder.
     assert ppk["data_source"] == date_path + "\\L3\\DJI_202607100915_002_SilverPeak"
 
+    # The uploaded all-points csv is split at intake: Pix4D reads TAT.csv and
+    # the LiDAR chain reads SINGLE_TLT.csv, both from the project folder.
     pix = get_job(client, jobs["PIX4D_MATIC"]["job_uuid"])["parameters"]
     assert pix["project_root"] == date_path
-    assert pix["tat_path"] == "Z:/Survey/Projects/targets.csv"
+    assert pix["tat_path"] == date_path + "\\TAT.csv"
 
     lidar = get_job(client, jobs["TERRA_LIDAR"]["job_uuid"])["parameters"]
     assert lidar["project_location"] == date_path + "\\Terra"
     assert lidar["data_source"] == date_path + "\\L3"
+    assert lidar["gcp_path"] == date_path + "\\SINGLE_TLT.csv"
 
     cyc = get_job(client, jobs["CYCLONE_CLASSIFY"]["job_uuid"])["parameters"]
     assert cyc["project_name"] == "Brahma_SilverPeak_10Jul2026_LiDAR"
@@ -71,6 +74,8 @@ def test_parameters_match_handle_complete_contract(client):
     intake = get_job(client, jobs["INTAKE_COPY"]["job_uuid"])["parameters"]
     assert intake["source_folders"] == ["D:/ingest/DJI_202607100915_002_SilverPeak"]
     assert intake["base_data_is_rinex"] is False
+    # INTAKE_COPY carries the uploaded all-points csv so it can split it.
+    assert intake["targets_upload"] == "Z:/Survey/Projects/targets.csv"
     # The RINEX worker carries the same intake parameters (it recomputes paths).
     rinex = get_job(client, jobs["RINEX_CONVERT"]["job_uuid"])["parameters"]
     assert rinex["base_data_paths"] == ["D:/ingest/base/1234.T02"]

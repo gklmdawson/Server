@@ -96,8 +96,11 @@ export const api = {
     ),
   uploadIntakeFile: (file) => upload("/api/v1/intake/upload", file),
   parseEcefFile: (file) => upload("/api/v1/intake/parse-ecef", file),
-  extractTlt: (storedPath) =>
-    request("/api/v1/intake/extract-tlt", { method: "POST", body: { stored_path: storedPath } }),
+  targetsSummary: (storedPath) =>
+    request("/api/v1/intake/targets-summary", {
+      method: "POST",
+      body: { stored_path: storedPath },
+    }),
   submitIntake: (body) => request("/api/v1/intake", { method: "POST", body }),
   retryJob: (uuid) => request(`/api/v1/jobs/${uuid}/retry`, { method: "POST" }),
   cancelJob: (uuid) => request(`/api/v1/jobs/${uuid}/cancel`, { method: "POST" }),

@@ -102,6 +102,14 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
     names = sorted({PureWindowsPath(s.replace("\\", "/")).name for s in sources})
     dji_data_source = _w(sensor_path, names[0]) if len(names) == 1 else sensor_path
 
+    # The operator uploads ONE all-points csv (TAT + TLT + misc). INTAKE_COPY
+    # splits it in the project folder into SINGLE_TLT.csv (TLT only, the LiDAR
+    # input) and TAT.csv (TAT + TLT, the Pix4D input); the chains read those
+    # prepared files from the share rather than the raw upload.
+    targets_upload = body.gcp_path.strip()
+    tlt_csv = _w(date_path, "SINGLE_TLT.csv")
+    tat_csv = _w(date_path, "TAT.csv")
+
     intake_params = {
         "root_path": root,
         "client": client,
@@ -112,6 +120,7 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
         "base_data_paths": [b.strip() for b in body.base_data_paths if b.strip()],
         "base_data_is_rinex": body.base_data_is_rinex,
         "base_ecef_xyz": body.base_ecef_xyz,
+        "targets_upload": targets_upload,
     }
 
     # Split intake: the NAS-local copy (INTAKE_COPY) runs first; the Windows
@@ -149,7 +158,7 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
             "parameters": {
                 "project_name": project_name,
                 "project_root": date_path,
-                "tat_path": body.gcp_path,
+                "tat_path": tat_csv if targets_upload else "",
                 "epsg_h": body.epsg_h,
                 "epsg_v": body.epsg_v,
             },
@@ -163,7 +172,7 @@ def build_job_specs(body: IntakeSubmit) -> list[dict[str, Any]]:
                 "project_name": project_name,
                 "project_location": terra_folder,
                 "data_source": sensor_path,
-                "gcp_path": body.gcp_path,
+                "gcp_path": tlt_csv if targets_upload else "",
                 "epsg_h": body.epsg_h,
                 "epsg_v": body.epsg_v,
                 "no_targets": body.no_targets,

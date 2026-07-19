@@ -75,6 +75,20 @@ class _IntakeBase(Processor):
         return [self._tp(str(s)) for s in (ctx.parameters.get("base_data_paths") or [])
                 if str(s).strip()]
 
+    def _targets_upload(self, ctx: JobContext) -> str:
+        """Local view of the uploaded all-points targets csv (empty if none)."""
+        raw = str(ctx.parameters.get("targets_upload") or "").strip()
+        return self._tp(raw) if raw else ""
+
+    def _split_targets(self, ctx: JobContext, paths: dict[str, str], status) -> None:
+        """Split the uploaded all-points csv into SINGLE_TLT.csv (TLT only) and
+        TAT.csv (TAT+TLT) in the project folder, so both chains read a prepared
+        file from the share. No-op when no targets csv was uploaded."""
+        src = self._targets_upload(ctx)
+        if not src:
+            return
+        ops.split_targets_csv(src, paths["date_folder"], status)
+
     @staticmethod
     def _base_ecef(ctx: JobContext) -> Optional[tuple[float, float, float]]:
         raw = ctx.parameters.get("base_ecef_xyz")
@@ -281,6 +295,9 @@ class IntakeProcessor(_IntakeBase):
         for base in self._base_paths(ctx):
             if not os.path.isfile(base):
                 errors.append(f"base data file not found: {base}")
+        targets = self._targets_upload(ctx)
+        if targets and not os.path.isfile(targets):
+            errors.append(f"targets csv not found: {targets}")
         if self._needs_converter(ctx):
             exe = self._converter_exe()
             if not exe:
@@ -313,6 +330,9 @@ class IntakeProcessor(_IntakeBase):
         if cancelled():
             return Validation(ok=False, errors=["cancelled"])
 
+        progress(95, "intake", "Preparing targets…")
+        self._split_targets(ctx, paths, status)
+
         progress(97, "intake", "Validating outputs…")
         validation = self.validate_outputs(ctx)
         if exif_date:
@@ -340,6 +360,9 @@ class IntakeCopyProcessor(_IntakeBase):
         for base in self._base_paths(ctx):
             if not os.path.isfile(base):
                 errors.append(f"base data file not found: {base}")
+        targets = self._targets_upload(ctx)
+        if targets and not os.path.isfile(targets):
+            errors.append(f"targets csv not found: {targets}")
         return errors
 
     def run_custom(self, ctx: JobContext, progress, cancelled) -> Validation:
@@ -361,6 +384,9 @@ class IntakeCopyProcessor(_IntakeBase):
         if self._base_paths(ctx):
             progress(92, "intake_copy", "Copying base data…")
             self._copy_base_raw(ctx, paths, status)
+
+        progress(95, "intake_copy", "Preparing targets…")
+        self._split_targets(ctx, paths, status)
 
         progress(97, "intake_copy", "Validating copy…")
         validation = self.validate_outputs(ctx)

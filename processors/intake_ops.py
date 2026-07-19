@@ -13,6 +13,7 @@ ProcessingWorker in data_intake.py (v2.4.4). Behavior is kept 1:1 except:
 """
 from __future__ import annotations
 
+import csv
 import glob
 import os
 import shutil
@@ -358,3 +359,61 @@ def copy_base_data(
     if base_data_is_rinex:
         rename_mix_to_nav(target, on_status)
     return copied
+
+
+# ---------------------------------------------------------------------------
+# Targets CSV split (all-points csv -> SINGLE_TLT.csv + TAT.csv)
+# ---------------------------------------------------------------------------
+
+# The point-type lives in the 5th column (index 4) of each target row — the
+# same convention the Terra-LiDAR automation reads (PyAutomateDJI).
+_TARGET_TYPE_COL = 4
+
+
+def _target_type(row: list[str]) -> str:
+    return row[_TARGET_TYPE_COL].strip().upper() if len(row) > _TARGET_TYPE_COL else ""
+
+
+def split_targets_csv(src: str, dest_folder: str,
+                      on_status: StatusFn = _noop) -> dict:
+    """Split an all-points targets csv into two files in dest_folder:
+
+      * SINGLE_TLT.csv — rows whose type (col 5) is TLT (the LiDAR chain input).
+      * TAT.csv        — rows whose type is TAT or TLT (the Pix4D chain input).
+
+    Misc/other point types are dropped from both. Returns a summary dict with
+    the written paths and the row counts. Mirrors the TLT rule the Terra-LiDAR
+    automation applies at runtime, but also produces the combined TAT file so
+    both chains read a prepared file from the project folder."""
+    tlt_rows: list[list[str]] = []
+    tat_rows: list[list[str]] = []
+    total = 0
+    with open(src, newline="", encoding="utf-8-sig") as fh:
+        for row in csv.reader(fh):
+            if not row or not any(c.strip() for c in row):
+                continue
+            total += 1
+            kind = _target_type(row)
+            if kind == "TLT":
+                tlt_rows.append(row)
+                tat_rows.append(row)
+            elif kind == "TAT":
+                tat_rows.append(row)
+
+    os.makedirs(dest_folder, exist_ok=True)
+    tlt_path = os.path.join(dest_folder, "SINGLE_TLT.csv")
+    tat_path = os.path.join(dest_folder, "TAT.csv")
+    with open(tlt_path, "w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(tlt_rows)
+    with open(tat_path, "w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows(tat_rows)
+
+    on_status(
+        f"Targets: {len(tlt_rows)} TLT -> SINGLE_TLT.csv, "
+        f"{len(tat_rows)} TAT+TLT -> TAT.csv (of {total} point(s))")
+    if not tlt_rows:
+        on_status("WARNING: no TLT rows found in the targets csv (SINGLE_TLT.csv is empty)")
+    return {
+        "tlt_path": tlt_path, "tat_path": tat_path,
+        "tlt_count": len(tlt_rows), "tat_count": len(tat_rows), "total_rows": total,
+    }

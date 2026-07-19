@@ -318,30 +318,34 @@ def parse_base_ecef_csv(path: str) -> tuple[float, float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Targets CSV  (keep only the TLT rows -> SINGLE_TLT.csv)
+# Targets CSV  (preview the TLT / TAT split of an all-points csv)
 # ---------------------------------------------------------------------------
 
-def extract_tlt_rows(src: str, dest: str) -> tuple[int, int]:
-    """Filter a targets/GCP CSV down to its TLT rows and write them to `dest`.
+def summarize_targets(src: str) -> dict[str, int]:
+    """Count how an all-points targets csv splits by point type (column 5).
 
-    A TLT row is one whose 5th column (index 4) equals "TLT" (case-insensitive),
-    matching the extraction the Terra-LiDAR automation does at runtime
-    (PyAutomateDJI._extract_tlt_csv). Returns (tlt_count, total_rows). Raises
-    ValueError when the source has no TLT rows."""
-    total = 0
-    tlt_rows: list[list[str]] = []
+    The pipeline writes the two files (SINGLE_TLT.csv = TLT only, TAT.csv =
+    TAT + TLT) into the project folder during INTAKE_COPY; this read-only
+    preview just tells the operator what the upload contains before submit.
+    Returns {tlt_count, tat_count, total_rows} where tat_count includes TLT
+    rows (TAT.csv is TAT + TLT). Raises ValueError on an empty file."""
+    tlt = tat = total = 0
     with open(src, newline="", encoding="utf-8-sig") as fh:
+        rows = 0
         for row in csv.reader(fh):
             if not row or not any(c.strip() for c in row):
                 continue
-            total += 1
-            if len(row) >= 5 and row[4].strip().upper() == "TLT":
-                tlt_rows.append(row)
-    if not tlt_rows:
-        raise ValueError("no TLT rows (column 5 == 'TLT') found in the targets csv")
-    with open(dest, "w", newline="", encoding="utf-8") as fh:
-        csv.writer(fh).writerows(tlt_rows)
-    return len(tlt_rows), total
+            rows += 1
+            kind = row[4].strip().upper() if len(row) >= 5 else ""
+            if kind == "TLT":
+                tlt += 1
+                tat += 1
+            elif kind == "TAT":
+                tat += 1
+        total = rows
+    if total == 0:
+        raise ValueError("targets csv has no data rows")
+    return {"tlt_count": tlt, "tat_count": tat, "total_rows": total}
 
 
 # ---------------------------------------------------------------------------

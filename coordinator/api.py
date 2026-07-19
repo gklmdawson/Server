@@ -689,23 +689,22 @@ async def intake_parse_ecef(request: Request, file: UploadFile = File(...),
     return {"ecef": [x, y, z]}
 
 
-@router.post("/intake/extract-tlt")
-def intake_extract_tlt(request: Request, body: dict[str, Any],
-                       cfg: CoordinatorConfig = Depends(get_cfg),
-                       _admin: None = Depends(require_admin)) -> dict[str, Any]:
-    """Preview the TLT extraction for an already-uploaded targets CSV.
+@router.post("/intake/targets-summary")
+def intake_targets_summary(request: Request, body: dict[str, Any],
+                           cfg: CoordinatorConfig = Depends(get_cfg),
+                           _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Preview how an uploaded all-points targets csv splits by point type.
 
-    Given the `stored_path` returned by /intake/upload, keep only the TLT rows
-    (column 5 == "TLT" — same rule the Terra-LiDAR automation applies) and write
-    them to SINGLE_TLT.csv beside the upload. The full targets file is left
-    untouched and still feeds both chains; this only surfaces the TLT count to
-    the operator and saves the extracted csv for reference."""
+    Given the `stored_path` returned by /intake/upload, report the TLT count and
+    the TAT+TLT count (column 5 == "TLT"/"TAT"). The actual SINGLE_TLT.csv and
+    TAT.csv are written into the project folder by INTAKE_COPY at run time; this
+    is a read-only preview so the operator can confirm the upload before submit."""
     from coordinator import probe as probe_mod
 
     stored_path = str(body.get("stored_path") or "").strip()
     if not stored_path:
         raise HTTPException(status_code=400, detail="stored_path is required")
-    # Jail: only files under the uploads volume may be read/written.
+    # Jail: only files under the uploads volume may be read.
     upload_base = os.path.realpath(cfg.upload_dir)
     real = os.path.realpath(stored_path)
     if real != upload_base and not real.startswith(upload_base + os.sep):
@@ -713,13 +712,10 @@ def intake_extract_tlt(request: Request, body: dict[str, Any],
     if not os.path.isfile(real):
         raise HTTPException(status_code=404, detail="uploaded file not found")
 
-    dest = os.path.join(os.path.dirname(real), "SINGLE_TLT.csv")
     try:
-        tlt_count, total_rows = probe_mod.extract_tlt_rows(real, dest)
+        return probe_mod.summarize_targets(real)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"tlt_count": tlt_count, "total_rows": total_rows,
-            "stored_path": os.path.abspath(dest)}
 
 
 @router.post("/jobs", status_code=201)
