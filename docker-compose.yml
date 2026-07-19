@@ -24,8 +24,11 @@ services:
       - /volume1/3dData:/mnt/3dData:ro
       # The card lands here when a crew plugs it into the NAS. Read-only: the
       # probe reads EXIF off it in place; the INTAKE_COPY worker copies from it.
-      # Mount the USB PARENT (the label, e.g. "Lexar", changes per card).
-      - /volumeUSB1/usbshare1:/mnt/ingest:ro
+      # UGOS mounts USB under /mnt/@usb/<device> (e.g. /mnt/@usb/sda1). Bind the
+      # PARENT so any card/device shows up (as /mnt/ingest/sda1/...). Note: a
+      # card inserted AFTER the containers start needs a `compose restart` of
+      # coordinator + intake-copy to propagate in.
+      - /mnt/@usb:/mnt/ingest:ro
     environment:
       - DATA_INTAKE_ADMIN_TOKEN=${DATA_INTAKE_ADMIN_TOKEN:?set it in .env}
     restart: unless-stopped
@@ -46,8 +49,9 @@ services:
     container_name: data-intake-copy
     command: ["data-intake-agent"]
     volumes:
-      # Card (read-only): the copy READS the source here.
-      - /volumeUSB1/usbshare1:/mnt/ingest:ro
+      # Card (read-only): the copy READS the source here. UGOS mounts USB under
+      # /mnt/@usb/<device>; bind the parent (card shows as /mnt/ingest/sda1/...).
+      - /mnt/@usb:/mnt/ingest:ro
       # Storage share (READ-WRITE): the copy WRITES the project tree here.
       - /volume1/3dData:/mnt/3dData
       # The uploaded base data / targets csv the coordinator wrote.

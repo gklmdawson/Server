@@ -136,7 +136,8 @@ Trimble RINEX step to Windows, and turns on the **NAS helper** that pre-fills
 the web form from the flight images.
 
 1. **Mounts + config.** The `intake-copy` service and the card/uploads mounts
-   are already in `docker-compose.yml` — adjust the USB path (`/volumeUSB1/...`)
+   are already in `docker-compose.yml` — adjust the USB path (UGOS uses
+   `/mnt/@usb`; check yours with `lsblk -o NAME,LABEL,MOUNTPOINT`)
    to where your NAS mounts the card. In `data/coordinator.yaml` add the card
    as a browse root and (optionally) the State Plane shapefile for EPSG:
 
