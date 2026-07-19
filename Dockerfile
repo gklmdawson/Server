@@ -41,6 +41,7 @@ COPY --from=webui /build/dist web/dist
 # coordinator.yaml for advanced settings (templates, intake_defaults, …).
 ENV DATA_INTAKE_WEBUI_DIR=/app/web/dist \
     DATA_INTAKE_DB_PATH=/data/coordinator.db \
+    DATA_INTAKE_UPLOAD_DIR=/data/uploads \
     DATA_INTAKE_COORDINATOR_CONFIG=/data/coordinator.yaml \
     DATA_INTAKE_HOST=0.0.0.0 \
     DATA_INTAKE_PORT=8443

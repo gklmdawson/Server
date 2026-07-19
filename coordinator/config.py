@@ -113,6 +113,11 @@ class CoordinatorConfig:
         env_db = os.environ.get("DATA_INTAKE_DB_PATH")
         if env_db:
             self.db_path = env_db
+        # Uploads must land on the mounted /data volume (not the container's
+        # ephemeral /app/data), and at a path the INTAKE_COPY worker also mounts.
+        env_uploads = os.environ.get("DATA_INTAKE_UPLOAD_DIR")
+        if env_uploads:
+            self.upload_dir = env_uploads
         env_host = os.environ.get("DATA_INTAKE_HOST")
         if env_host:
             self.host = env_host
