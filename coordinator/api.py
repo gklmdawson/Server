@@ -21,7 +21,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from coordinator import __version__
@@ -57,6 +57,7 @@ from shared.schemas import (
     SucceededReport,
     SyncRequest,
     SyncResponse,
+    ACTIVE_STATUSES,
     TERMINAL_STATUSES,
 )
 
@@ -64,6 +65,7 @@ logger = logging.getLogger("coordinator.api")
 router = APIRouter(prefix="/api/v1")
 
 TERMINAL = {s.value for s in TERMINAL_STATUSES}
+ACTIVE = {s.value for s in ACTIVE_STATUSES}  # live on a machine — cancel before deleting
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +841,29 @@ def get_project(project_uuid: str, request: Request,
     }
 
 
+@router.delete("/projects/{project_uuid}")
+def delete_project(project_uuid: str, request: Request,
+                   session: Session = Depends(get_session),
+                   _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Remove a whole submission — the project and all its jobs/events — for a
+    bad intake. Refused while any job is live on a machine (ASSIGNED/RUNNING);
+    cancel it first so no agent is left working on a forgotten job."""
+    project = _get_project(session, project_uuid)
+    jobs = list(project.jobs)
+    live = [j for j in jobs if j.status in ACTIVE]
+    if live:
+        names = ", ".join(f"{j.job_type} ({j.status})" for j in live)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cancel the running job(s) first, then delete the project: {names}")
+    # Core deletes (events -> jobs -> project) so the ORM never tries to null
+    # the project FK on rows we've already removed.
+    pid = project.id
+    _delete_jobs(session, jobs)
+    session.execute(delete(Project).where(Project.id == pid))
+    return {"ok": True, "deleted_jobs": len(jobs)}
+
+
 # ---------------------------------------------------------------------------
 # Admin: job actions
 # ---------------------------------------------------------------------------
@@ -886,6 +911,59 @@ def retry_job(job_uuid: str, request: Request,
     job.cancel_requested = False
     log_event(session, job, EventType.RETRIED.value, f"Manual retry #{job.retry_count}")
     return {"ok": True, "status": job.status, "retry_count": job.retry_count}
+
+
+def _dependents_closure(session: Session, job: Job) -> list[Job]:
+    """The job plus every job that (transitively) depends on it — a dependent
+    can never run once its dependency is gone, so deleting one deletes the tail
+    of the chain with it. Scoped to the job's project (deps live in one
+    submission); falls back to all jobs for a project-less job."""
+    if job.project_id is not None:
+        scope = list(session.execute(
+            select(Job).where(Job.project_id == job.project_id)).scalars().all())
+    else:
+        scope = list(session.execute(select(Job)).scalars().all())
+    to_delete = {job.uuid}
+    changed = True
+    while changed:
+        changed = False
+        for j in scope:
+            if j.uuid not in to_delete and any(
+                dep in to_delete for dep in (j.depends_on_json or [])
+            ):
+                to_delete.add(j.uuid)
+                changed = True
+    return [j for j in scope if j.uuid in to_delete]
+
+
+def _delete_jobs(session: Session, jobs: list[Job]) -> None:
+    """Delete jobs and their events (FK-safe: events first)."""
+    ids = [j.id for j in jobs]
+    session.execute(delete(JobEvent).where(JobEvent.job_id.in_(ids)))
+    session.execute(delete(Job).where(Job.id.in_(ids)))
+
+
+@router.delete("/jobs/{job_uuid}")
+def delete_job(job_uuid: str, request: Request,
+               session: Session = Depends(get_session),
+               _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Remove a job from the dashboard, along with any jobs that depend on it.
+
+    A job that is live on a machine (ASSIGNED/RUNNING) must be cancelled first —
+    deleting it here would leave the agent working on a job the coordinator has
+    forgotten. Everything else (QUEUED / FAILED / CANCELLED / SUCCEEDED /
+    NEEDS_ATTENTION) can be deleted."""
+    job = _get_job(session, job_uuid)
+    victims = _dependents_closure(session, job)
+    live = [j for j in victims if j.status in ACTIVE]
+    if live:
+        names = ", ".join(f"{j.uuid} ({j.status})" for j in live)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cancel the running job(s) first, then delete: {names}")
+    deleted = [j.uuid for j in victims]
+    _delete_jobs(session, victims)
+    return {"ok": True, "deleted": deleted, "count": len(deleted)}
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,12 @@ export default function Dashboard({ onOpenProject }) {
     }
   };
 
+  const deleteJob = (j) => async () => {
+    if (!window.confirm(`Delete ${j.job_type} and any jobs waiting on it? This cannot be undone.`))
+      return;
+    await act(() => api.deleteJob(j.job_uuid))();
+  };
+
   const attention = data.attention || [];
 
   return (
@@ -148,6 +154,9 @@ export default function Dashboard({ onOpenProject }) {
                         onClick={act(() => api.cancelJob(j.job_uuid))}
                       >
                         Cancel
+                      </button>
+                      <button className="btn small danger" onClick={deleteJob(j)}>
+                        Delete
                       </button>
                     </span>
                   </td>

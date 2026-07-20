@@ -58,9 +58,31 @@ function ProjectDetail({ uuid, onBack }) {
     }
   };
 
+  const deleteJob = (j) => async () => {
+    if (!window.confirm(`Delete ${j.job_type} and any jobs waiting on it? This cannot be undone.`))
+      return;
+    await act(() => api.deleteJob(j.job_uuid))();
+  };
+
+  const deleteProject = async () => {
+    if (
+      !window.confirm(
+        `Delete the whole "${data.name}" submission and all its jobs? This cannot be undone.`
+      )
+    )
+      return;
+    setActionError(null);
+    try {
+      await api.deleteProject(uuid);
+      onBack();
+    } catch (err) {
+      setActionError(err);
+    }
+  };
+
   return (
     <section className="card">
-      <h2>
+      <h2 style={{ display: "flex", alignItems: "center" }}>
         <button className="btn small" onClick={onBack} style={{ marginRight: 10 }}>
           ← All projects
         </button>
@@ -69,6 +91,13 @@ function ProjectDetail({ uuid, onBack }) {
         <span className="count">
           {data.sensor_type} · {data.date_folder}
         </span>
+        <button
+          className="btn small danger"
+          style={{ marginLeft: "auto" }}
+          onClick={deleteProject}
+        >
+          Delete project
+        </button>
       </h2>
       <ErrorBanner error={actionError} prefix="Action failed" />
       {data.root_path && (
@@ -133,6 +162,13 @@ function ProjectDetail({ uuid, onBack }) {
                         onClick={act(() => api.cancelJob(j.job_uuid))}
                       >
                         Cancel
+                      </button>
+                    )}
+                    {["QUEUED", "SUCCEEDED", "FAILED", "CANCELLED", "NEEDS_ATTENTION"].includes(
+                      j.status
+                    ) && (
+                      <button className="btn small danger" onClick={deleteJob(j)}>
+                        Delete
                       </button>
                     )}
                   </span>
