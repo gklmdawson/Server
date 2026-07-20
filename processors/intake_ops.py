@@ -29,7 +29,7 @@ SUBPROCESS_TIMEOUT = 1800
 
 # Folder templates — identical to FolderStructureBuilder in data_intake.py.
 LIDAR_TEMPLATE = {"BaseData": {}, "PPK": {}, "Pix4d": {}, "TerraArchive": {}, "Terra": {}}
-STANDARD_TEMPLATE = {"BaseData": {}, "Pix4D": {}, "Terra": {}, "PPK": {}}
+STANDARD_TEMPLATE = {"BaseData": {}, "Pix4d": {}, "Terra": {}, "PPK": {}}
 
 StatusFn = Callable[[str], None]
 

@@ -415,10 +415,10 @@ class Pix4DAutomation:
 
     def enter_path_name(self):
         """Step 5 — Click the Path field (offset from the 'Path' label, same as
-        Project name) and type <PROJECT_ROOT>\\Pix4D, then verify it landed via
-        UIA read-back. Data intake already creates that 'Pix4D' subfolder under
-        the project root."""
-        pix4d_path = str(Path(PROJECT_ROOT) / "Pix4D")
+        Project name) and type <PROJECT_ROOT>\\Pix4d, then verify it landed via
+        UIA read-back. Data intake already creates that 'Pix4d' subfolder under
+        the project root (same name for every sensor type)."""
+        pix4d_path = str(Path(PROJECT_ROOT) / "Pix4d")
         self._click_offset_from_anchor("Path", "Text", dx=8, dy=28)
         self._type_and_verify(pix4d_path, "Path")
 
@@ -613,7 +613,7 @@ def main():
     parser = argparse.ArgumentParser(description="PIX4Dmatic automation")
     parser.add_argument("--project-name", default=None)
     parser.add_argument("--project-root", default=None,
-                        help="date folder: images imported from <root>\\PPK, project created in <root>\\Pix4D")
+                        help="date folder: images imported from <root>\\PPK, project created in <root>\\Pix4d")
     parser.add_argument("--epsg-h",       default=None)
     parser.add_argument("--epsg-v",       default=None)
     parser.add_argument("--tat-path",     default=None, help="targets (TAT) csv, imported as-is")

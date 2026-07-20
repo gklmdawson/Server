@@ -61,8 +61,9 @@ PAYLOAD_KEY = "pix4d_automate"
 DEFAULT_ORTHO_GLOB = "Pix4[dD]/**/exports/*ortho*.tif*"
 PPK_DIR = "PPK"
 # The project-output subfolder AutomatePix4D types into the Path field; intake
-# pre-creates it on the NAS, so the scratch run needs it created too.
-PIX4D_OUT_DIR = "Pix4D"
+# pre-creates it on the NAS, so the scratch run needs it created too. Intake
+# names it "Pix4d" for every sensor type.
+PIX4D_OUT_DIR = "Pix4d"
 
 
 class Pix4dMaticProcessor(Processor):

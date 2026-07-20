@@ -97,7 +97,7 @@ def test_full_run_builds_tree_copies_and_converts(cfg, tmp_path):
     assert validation.ok, validation.errors
 
     date_dir = tmp_path / "nas" / "Brahma" / "SilverPeak" / "10Jul2026"
-    for sub in ("BaseData", "Pix4D", "Terra", "PPK", "M3E"):
+    for sub in ("BaseData", "Pix4d", "Terra", "PPK", "M3E"):
         assert (date_dir / sub).is_dir()
     flight = date_dir / "M3E" / src.name
     assert (flight / "a.bin").read_bytes() == b"a" * 100

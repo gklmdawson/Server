@@ -1073,7 +1073,7 @@ class FolderStructureBuilder:
     # Template for standard sensors (M3E, P1, R3Pro)
     STANDARD_TEMPLATE = {
         "BaseData": {},
-        "Pix4D": {},
+        "Pix4d": {},
         "Terra": {},
         "PPK": {},
     }
