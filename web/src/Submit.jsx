@@ -10,14 +10,6 @@ import { ErrorBanner } from "./ui.jsx";
 // folder probes it on the NAS (EXIF) to pre-fill sensor/date/EPSG — all still
 // editable. The heavy work runs as INTAKE_COPY -> RINEX_CONVERT jobs.
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function todayDate() {
-  const now = new Date();
-  return `${String(now.getDate()).padStart(2, "0")}${MONTHS[now.getMonth()]}${now.getFullYear()}`;
-}
-
 function splitLines(text) {
   return text
     .split(/\r?\n/)
@@ -42,7 +34,7 @@ export default function Submit({ onSubmitted }) {
     root_path: DEFAULT_ROOT_PATH,
     client: "",
     project: "",
-    date: todayDate(),
+    date: "",
     sensor_type: "",
     sources: "",
     base_data_is_rinex: false,
@@ -278,7 +270,7 @@ export default function Submit({ onSubmitted }) {
                 type="text"
                 required
                 pattern="\d{2}[A-Za-z]{3}\d{4}"
-                value={}
+                value={form.date}
                 onChange={set("date")}
               />
             </div>
@@ -408,18 +400,13 @@ export default function Submit({ onSubmitted }) {
                 optional; type metres, or drop / browse a Point ID,X,Y,Z csv
               </span>
             </label>
-            <input
-              type="text"
-              placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
-              value={form.ecef}
-              onChange={set("ecef")}
-            />
-            <div
-              className={`upload-drop ${ecefOver ? "drag-over" : ""}`}
-              onClick={() => ecefFileRef.current?.click()}
-              role="button"
-              tabIndex={0}
-            >
+            <div className="ecef-input-row">
+              <input
+                type="text"
+                placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
+                value={form.ecef}
+                onChange={set("ecef")}
+              />
               <input
                 ref={ecefFileRef}
                 type="file"
@@ -430,10 +417,16 @@ export default function Submit({ onSubmitted }) {
                   e.target.value = "";
                 }}
               />
-              <span className="upload-hint">
-                {ecefBusy ? "Parsing…" : "Drop a csv here or click to browse"}
-              </span>
+              <button
+                type="button"
+                className="btn small"
+                disabled={ecefBusy}
+                onClick={() => ecefFileRef.current?.click()}
+              >
+                Browse…
+              </button>
             </div>
+            {ecefBusy && <div className="drop-note">Parsing ECEF csv…</div>}
             {ecefErr && <div className="drop-note">{ecefErr}</div>}
           </div>
         </fieldset>
