@@ -8,8 +8,9 @@ down on the machine during Phase 4 calibration:
   * completion_log_glob + completion_pattern / failure_pattern — Pix4Dmatic
     writes rich stage logging; when configured, the newest matching log file
     is tailed for progress messages, an early failure signal, and completion.
-  * ortho_glob (default "Pix4D/**/*ortho*.tif") — the orthomosaic is the
-    final export; validation requires it fresh and over ortho_min_mb.
+  * ortho_glob (default "Pix4[dD]/**/exports/*ortho*.tif*") — the orthomosaic in
+    the project's exports folder is the final export; validation requires it
+    fresh and over ortho_min_mb.
 
 Scratch drive (agent.yaml `scratch_dir`): AV (Sophos) scanning of the NAS
 share slows Pix4D badly, so when a scratch dir is configured the processor
@@ -53,8 +54,15 @@ from processors.util import (
 )
 
 PAYLOAD_KEY = "pix4d_automate"
-DEFAULT_ORTHO_GLOB = "Pix4D/**/*ortho*.tif"
+# Pix4Dmatic exports to <project_root>/Pix4D/<project>/exports/<name>-orthomosaic.tiff
+# (AutomatePix4D sets the project Path to <project_root>/Pix4D). Require the
+# exports folder (the final deliverable, not an intermediate ortho), accept
+# .tif or .tiff, and match either folder case (Pix4D / Pix4d).
+DEFAULT_ORTHO_GLOB = "Pix4[dD]/**/exports/*ortho*.tif*"
 PPK_DIR = "PPK"
+# The project-output subfolder AutomatePix4D types into the Path field; intake
+# pre-creates it on the NAS, so the scratch run needs it created too.
+PIX4D_OUT_DIR = "Pix4D"
 
 
 class Pix4dMaticProcessor(Processor):
@@ -200,6 +208,10 @@ class Pix4dMaticProcessor(Processor):
             raise ProcessorError(f"PPK folder not found to stage: {ppk_src}")
         scratch.mkdir(parents=True, exist_ok=True)
         self._copy_tree(ppk_src, scratch / PPK_DIR, cancelled)
+        # AutomatePix4D types <project_root>/Pix4D into the project Path field and
+        # relies on that folder existing (intake makes it on the NAS); create it
+        # on the scratch root too so the run behaves the same.
+        (scratch / PIX4D_OUT_DIR).mkdir(exist_ok=True)
         tat = str(ctx.parameters.get("tat_path", "") or "")
         if tat and Path(tat).is_file():
             try:

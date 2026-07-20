@@ -211,10 +211,11 @@ def test_pix4d_after_exit_completes_when_ortho_appears(pix4d_env, tmp_path):
     cfg, root, params = pix4d_env
     proc = Pix4dMaticProcessor(cfg)
     ctx = _ctx(tmp_path, params, max_seconds=60)
-    ortho = root / "Pix4D" / "job_ortho.tif"
+    ortho = root / "Pix4D" / "Job" / "exports" / "Job-orthomosaic.tiff"
 
     def write_soon():
         time.sleep(0.3)
+        ortho.parent.mkdir(parents=True, exist_ok=True)
         ortho.write_bytes(b"T" * 2048)
 
     threading.Thread(target=write_soon, daemon=True).start()
@@ -245,7 +246,8 @@ def test_pix4d_completion_pattern_short_circuits(pix4d_env, tmp_path):
     cfg, root, params = pix4d_env
     params.update(completion_log_glob="Pix4D/*.log",
                   completion_pattern=r"Processing finished")
-    (root / "Pix4D" / "job_ortho.tif").write_bytes(b"T" * 2048)
+    (root / "Pix4D" / "Job" / "exports").mkdir(parents=True)
+    (root / "Pix4D" / "Job" / "exports" / "Job-orthomosaic.tiff").write_bytes(b"T" * 2048)
     (root / "Pix4D" / "app.log").write_text("[11:00] Processing finished OK\n")
     proc = Pix4dMaticProcessor(cfg)
     start = time.monotonic()
@@ -261,7 +263,8 @@ def test_pix4d_validation(pix4d_env, tmp_path):
     v = proc.validate_outputs(ctx)
     assert not v.ok
 
-    (root / "Pix4D" / "job_ortho.tif").write_bytes(b"T" * 2048)
+    (root / "Pix4D" / "Job" / "exports").mkdir(parents=True)
+    (root / "Pix4D" / "Job" / "exports" / "Job-orthomosaic.tiff").write_bytes(b"T" * 2048)
     v = proc.validate_outputs(ctx)
     assert v.ok and v.summary["ortho_count"] == 1
 
@@ -320,15 +323,17 @@ def test_pix4d_after_exit_copies_project_to_nas_and_clears_scratch(pix4d_scratch
     ctx = _ctx(tmp_path, params, max_seconds=60)
     proc.prepare(ctx, cancelled=lambda: False)
 
-    # Simulate Pix4D producing the project + ortho on the scratch drive.
-    (scratch_job / "Pix4D").mkdir(parents=True)
-    (scratch_job / "Pix4D" / "job_ortho.tif").write_bytes(b"T" * 4096)
+    # Simulate Pix4D producing the project + ortho on the scratch drive, in the
+    # real exports layout (<Pix4D>/<project>/exports/<name>-orthomosaic.tiff).
+    export = scratch_job / "Pix4D" / "Job" / "exports"
+    export.mkdir(parents=True)
+    (export / "Job-orthomosaic.tiff").write_bytes(b"T" * 4096)
     (scratch_job / "Job.p4d").write_text("project")
 
     proc.after_exit(ctx, cancelled=lambda: False)
 
     # Project copied back to the NAS…
-    assert (nas / "Pix4D" / "job_ortho.tif").is_file()
+    assert (nas / "Pix4D" / "Job" / "exports" / "Job-orthomosaic.tiff").is_file()
     assert (nas / "Job.p4d").is_file()
     # …the PPK input is NOT copied back (it already lives on the NAS)…
     assert not (nas / "PPK" / "PPK").exists()
@@ -336,6 +341,26 @@ def test_pix4d_after_exit_copies_project_to_nas_and_clears_scratch(pix4d_scratch
     assert not scratch_job.exists()
 
     assert proc.validate_outputs(ctx).ok
+
+
+def test_pix4d_validation_matches_real_export_path(pix4d_env, tmp_path):
+    """The real Pix4Dmatic layout: <root>/Pix4d/<project>/exports/
+    <name>-orthomosaic.tiff — lowercase folder, dashes, double-f .tiff."""
+    cfg, root, params = pix4d_env
+    proc = Pix4dMaticProcessor(cfg)
+    export = root / "Pix4d" / "Providence-200W-3JUL26" / "exports"
+    export.mkdir(parents=True)
+    (export / "Providence-200W-3JUL26-orthomosaic.tiff").write_bytes(b"T" * 4096)
+    assert proc.validate_outputs(_ctx(tmp_path, params)).ok
+
+
+def test_pix4d_validation_ignores_ortho_outside_exports(pix4d_env, tmp_path):
+    """An intermediate ortho NOT under exports must not count as the deliverable."""
+    cfg, root, params = pix4d_env
+    proc = Pix4dMaticProcessor(cfg)
+    (root / "Pix4D" / "Job").mkdir(parents=True)
+    (root / "Pix4D" / "Job" / "preview-orthomosaic.tiff").write_bytes(b"T" * 4096)
+    assert not proc.validate_outputs(_ctx(tmp_path, params)).ok
 
 
 def test_pix4d_prepare_noop_without_scratch_dir(pix4d_env, tmp_path):
