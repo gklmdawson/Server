@@ -36,6 +36,11 @@ class AgentConfig:
     # \\NAS\3dData into /mnt/3dData. Longest matching prefix wins;
     # case-insensitive; slashes normalized. Empty (Windows agents) = no-op.
     path_map: dict[str, str] = field(default_factory=dict)
+    # Local scratch drive for the Pix4D step: the PPK folder is copied here,
+    # Pix4Dmatic runs off this local disk (not the Sophos-scanned NAS share),
+    # then the finished project is copied back to the NAS and the scratch copy
+    # is removed. Empty (default) = run in place on the NAS, unchanged.
+    scratch_dir: str = ""
     keep_job_dirs_days: int = 7
     log_level: str = "INFO"
 
@@ -68,6 +73,8 @@ class AgentConfig:
                 raise SystemExit(f"DATA_INTAKE_PATH_MAP is not valid JSON: {exc}")
         if v := env.get("DATA_INTAKE_LOG_LEVEL"):
             self.log_level = v
+        if v := env.get("DATA_INTAKE_SCRATCH_DIR"):
+            self.scratch_dir = v
         self.resolve_token()
 
     def resolve_token(self) -> None:

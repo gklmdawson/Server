@@ -102,6 +102,14 @@ this doc wins.
 * Pix4Dmatic progress/completion comes from **tailing its logs** (rich stage +
   completion logging); the **orthomosaic is the final export** to validate; the
   automation then **saves the project and closes Pix4Dmatic**.
+* **Pix4D scratch drive** (agent.yaml `scratch_dir`, PIX4D box only): AV (Sophos)
+  scanning of the NAS share slows Pix4D badly, so when set the `PIX4D_MATIC`
+  processor stages the run onto local disk — `prepare()` copies `PPK/` (+ the TAT
+  csv) to `<scratch_dir>/<project_name>/`, Pix4D runs there, then `after_exit()`
+  copies the finished project back to the NAS `project_root`, verifies the ortho
+  landed, and deletes the scratch copy (kept on failure for retry/inspection).
+  Empty `scratch_dir` = run in place on the NAS. This uses a general pre-launch
+  `prepare()` processor hook (runner calls it after preflight, before launch).
 * `DJI_PARAMETERS.ini` is standalone-run fallback only — ignored by this system.
 
 ---

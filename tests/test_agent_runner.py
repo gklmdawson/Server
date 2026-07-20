@@ -136,6 +136,36 @@ def test_preflight_failure_reports_failed(env):
     assert "started" not in client.kinds(), "payload must not launch after failed preflight"
 
 
+def test_prepare_runs_before_launch(env):
+    cfg, client, registry, runner = env
+    marks = []
+
+    class PreppingProcessor(type(registry["MOCK"])):
+        def prepare(self, ctx, cancelled):
+            marks.append("prepared")
+
+    ctx = _ctx(runner, params={"duration": 0.2})
+    runner._execute(ctx, PreppingProcessor(cfg))
+    assert marks == ["prepared"]
+    assert client.kinds()[0] == "started" and client.kinds()[-1] == "succeeded"
+
+
+def test_prepare_failure_reports_failed_without_launch(env):
+    cfg, client, registry, runner = env
+    from processors.base import ProcessorError
+
+    class FailingPrep(type(registry["MOCK"])):
+        def prepare(self, ctx, cancelled):
+            raise ProcessorError("scratch drive full")
+
+    ctx = _ctx(runner)
+    runner._execute(ctx, FailingPrep(cfg))
+    _, args, _ = client.last("failed")
+    assert args[2] == "PREPARE_FAILED"
+    assert "scratch drive full" in args[3]
+    assert "started" not in client.kinds(), "payload must not launch after failed prepare"
+
+
 def test_state_file_present_while_running(env):
     cfg, client, registry, runner = env
     assignment = JobAssignment(job_uuid="job-s", job_type="MOCK",

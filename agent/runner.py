@@ -291,6 +291,23 @@ class JobRunner:
             self._execute_custom(ctx, processor)
             return
 
+        # Pre-launch setup (e.g. staging inputs to a scratch drive). Runs before
+        # the payload starts; cancel is honored so a long copy can be aborted.
+        try:
+            processor.prepare(ctx, self._cancel_event.is_set)
+        except ProcessorError as exc:
+            if self._cancel_event.is_set():
+                self._send_with_retry("cancelled", lambda: self.client.report_cancelled(
+                    ctx.job_uuid, "Cancelled during preparation"))
+            else:
+                self._send_with_retry("failed", lambda: self.client.report_failed(
+                    ctx.job_uuid, None, "PREPARE_FAILED", str(exc)))
+            return
+        if self._cancel_event.is_set():
+            self._send_with_retry("cancelled", lambda: self.client.report_cancelled(
+                ctx.job_uuid, "Cancelled during preparation"))
+            return
+
         try:
             cmd = processor.build_command(ctx)
         except Exception as exc:

@@ -268,3 +268,79 @@ def test_pix4d_validation(pix4d_env, tmp_path):
     ctx.started_wall = time.time() + 3600  # ortho older than job start -> stale
     v = proc.validate_outputs(ctx)
     assert not v.ok
+
+
+# --- Pix4Dmatic scratch-drive staging -----------------------------------------
+
+@pytest.fixture
+def pix4d_scratch_env(tmp_path):
+    exe = tmp_path / "PIX4D_AUTOMATE.exe"
+    exe.write_bytes(b"exe")
+    scratch = tmp_path / "scratch"
+    cfg = AgentConfig(node_name="P", work_root=str(tmp_path / "work"),
+                      capabilities=["PIX4D_MATIC"],
+                      payload_paths={"pix4d_automate": str(exe)},
+                      scratch_dir=str(scratch))
+    nas = tmp_path / "nas" / "date"
+    (nas / "PPK").mkdir(parents=True)
+    (nas / "PPK" / "img.jpg").write_bytes(b"jpeg" * 100)
+    (nas / "PPK" / "POS.txt").write_text("pos")
+    tat = tmp_path / "TAT.csv"
+    tat.write_text("p1,1,2,3,TAT\n")
+    params = {"project_name": "Job", "project_root": str(nas),
+              "tat_path": str(tat), "completion_poll_seconds": 0.05,
+              "ortho_min_mb": 0.00001}
+    return cfg, nas, scratch / "Job", params
+
+
+def test_pix4d_prepare_stages_ppk_and_tat_to_scratch(pix4d_scratch_env, tmp_path):
+    cfg, nas, scratch_job, params = pix4d_scratch_env
+    proc = Pix4dMaticProcessor(cfg)
+    proc.prepare(_ctx(tmp_path, params), cancelled=lambda: False)
+
+    assert (scratch_job / "PPK" / "img.jpg").is_file()
+    assert (scratch_job / "PPK" / "POS.txt").is_file()
+    assert (scratch_job / "TAT.csv").is_file()
+
+
+def test_pix4d_build_command_points_at_scratch(pix4d_scratch_env, tmp_path):
+    cfg, nas, scratch_job, params = pix4d_scratch_env
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params)
+    proc.prepare(ctx, cancelled=lambda: False)
+    cmd = proc.build_command(ctx)
+    assert cmd[cmd.index("--project-root") + 1] == str(scratch_job)
+    # TAT was staged, so the command reads the local copy, not the NAS path.
+    assert cmd[cmd.index("--tat-path") + 1] == str(scratch_job / "TAT.csv")
+
+
+def test_pix4d_after_exit_copies_project_to_nas_and_clears_scratch(pix4d_scratch_env, tmp_path):
+    cfg, nas, scratch_job, params = pix4d_scratch_env
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params, max_seconds=60)
+    proc.prepare(ctx, cancelled=lambda: False)
+
+    # Simulate Pix4D producing the project + ortho on the scratch drive.
+    (scratch_job / "Pix4D").mkdir(parents=True)
+    (scratch_job / "Pix4D" / "job_ortho.tif").write_bytes(b"T" * 4096)
+    (scratch_job / "Job.p4d").write_text("project")
+
+    proc.after_exit(ctx, cancelled=lambda: False)
+
+    # Project copied back to the NAS…
+    assert (nas / "Pix4D" / "job_ortho.tif").is_file()
+    assert (nas / "Job.p4d").is_file()
+    # …the PPK input is NOT copied back (it already lives on the NAS)…
+    assert not (nas / "PPK" / "PPK").exists()
+    # …and the scratch copy is gone.
+    assert not scratch_job.exists()
+
+    assert proc.validate_outputs(ctx).ok
+
+
+def test_pix4d_prepare_noop_without_scratch_dir(pix4d_env, tmp_path):
+    cfg, root, params = pix4d_env  # this cfg has no scratch_dir
+    proc = Pix4dMaticProcessor(cfg)
+    # Should not raise and should not create any scratch tree.
+    proc.prepare(_ctx(tmp_path, params), cancelled=lambda: False)
+    assert proc._scratch_root(_ctx(tmp_path, params)) is None

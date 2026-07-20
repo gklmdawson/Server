@@ -81,6 +81,14 @@ class Processor:
         don't fix themselves and a human should see them."""
         return []
 
+    def prepare(self, ctx: JobContext, cancelled: "CancelCheck") -> None:
+        """Setup work AFTER preflight and BEFORE the payload launches — e.g.
+        staging inputs onto a local scratch drive. Runs on the standard
+        (non-custom) execution path only. Must poll `cancelled()` during long
+        work and return promptly when it's true. Raise ProcessorError to fail
+        the job. Default: no-op."""
+        return None
+
     def build_command(self, ctx: JobContext) -> list[str]:
         raise NotImplementedError
 

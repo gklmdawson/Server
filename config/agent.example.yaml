@@ -44,6 +44,14 @@ payload_paths:
   cyclone_3dr_exe: C:/Program Files/Leica Geosystems/Cyclone 3DR/3DR.exe
   cyclone_classify_script: Z:/Survey/UT/_Scripts/3DR/LAZ-Classify/ClassifyLAZ.js
 
+# Local scratch drive for the Pix4D step (PIX4D-01 only). When set, the
+# PIX4D_MATIC job copies the PPK folder (+ the TAT csv) here, runs Pix4Dmatic
+# off this local disk instead of the AV-scanned NAS share, then copies the
+# finished project back to the NAS and deletes the scratch copy. Use a fast
+# local disk with room for one project's imagery + outputs. Leave empty (or
+# omit) to run in place on the NAS, unchanged.
+scratch_dir: ""                # e.g. D:/pix4d_scratch
+
 keep_job_dirs_days: 7
 request_timeout_seconds: 15
 log_level: INFO
