@@ -149,7 +149,11 @@ class _IntakeBase(Processor):
         progress(pct_lo, "intake", "Creating folder structure…")
         structure = ops.build_structure(str(p["client"]), str(p["project"]),
                                         str(p["date"]), str(p["sensor_type"]))
-        ops.create_folder_structure(str(p["root_path"]), structure)
+        # Build the tree at this machine's local view of the root (path_map),
+        # not the raw UNC — otherwise the empty template folders (Terra/PPK/…)
+        # land off-share while only the copied-into folders (sensor/BaseData)
+        # appear at the translated location.
+        ops.create_folder_structure(self._tp(str(p["root_path"])), structure)
 
         sources = self._sources(ctx)
         total = max(ops.count_files(sources), 1)

@@ -109,6 +109,35 @@ def test_full_run_builds_tree_copies_and_converts(cfg, tmp_path):
     assert calls, "expected progress reports"
 
 
+def test_folder_tree_built_at_translated_root(tmp_path):
+    """With a path_map (the Docker/NAS worker), the whole template tree —
+    including the empty Terra/PPK/Pix4d/TerraArchive folders — must land at the
+    machine-local root, not the raw UNC."""
+    from processors.intake import IntakeCopyProcessor
+
+    local_root = tmp_path / "nas_local"
+    unc_root = "\\\\NAS\\3dData"
+    cfg = AgentConfig(
+        node_name="NAS-COPY", work_root=str(tmp_path / "work"),
+        capabilities=["INTAKE_COPY"],
+        path_map={unc_root: str(local_root)},
+    )
+    src, base = make_sources(tmp_path)
+    params = {
+        "root_path": unc_root, "client": "Brahma", "project": "SilverPeak",
+        "date": "10Jul2026", "sensor_type": "L3",
+        "source_folders": [str(src)], "base_data_paths": [str(base)],
+        "base_data_is_rinex": False, "base_ecef_xyz": None,
+    }
+    ctx = make_ctx(tmp_path, params)
+    validation, _ = run(IntakeCopyProcessor(cfg), ctx)
+    assert validation.ok, validation.errors
+
+    date_dir = local_root / "Brahma" / "SilverPeak" / "10Jul2026"
+    for sub in ("BaseData", "PPK", "Pix4d", "TerraArchive", "Terra", "L3"):
+        assert (date_dir / sub).is_dir(), f"{sub} not created under the translated root"
+
+
 def test_run_splits_targets_into_tlt_and_tat(cfg, tmp_path):
     src, base = make_sources(tmp_path)
     targets = tmp_path / "uploads" / "all_points.csv"
