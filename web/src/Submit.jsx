@@ -43,7 +43,7 @@ export default function Submit({ onSubmitted }) {
     client: "",
     project: "",
     date: todayDate(),
-    sensor_type: "M3E",
+    sensor_type: "",
     sources: "",
     base_data_is_rinex: false,
     ecef: "",
@@ -278,7 +278,7 @@ export default function Submit({ onSubmitted }) {
                 type="text"
                 required
                 pattern="\d{2}[A-Za-z]{3}\d{4}"
-                value={form.date}
+                value={}
                 onChange={set("date")}
               />
             </div>
@@ -408,13 +408,18 @@ export default function Submit({ onSubmitted }) {
                 optional; type metres, or drop / browse a Point ID,X,Y,Z csv
               </span>
             </label>
-            <div className="ecef-input-row">
-              <input
-                type="text"
-                placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
-                value={form.ecef}
-                onChange={set("ecef")}
-              />
+            <input
+              type="text"
+              placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
+              value={form.ecef}
+              onChange={set("ecef")}
+            />
+            <div
+              className={`upload-drop ${ecefOver ? "drag-over" : ""}`}
+              onClick={() => ecefFileRef.current?.click()}
+              role="button"
+              tabIndex={0}
+            >
               <input
                 ref={ecefFileRef}
                 type="file"
@@ -425,16 +430,10 @@ export default function Submit({ onSubmitted }) {
                   e.target.value = "";
                 }}
               />
-              <button
-                type="button"
-                className="btn small"
-                disabled={ecefBusy}
-                onClick={() => ecefFileRef.current?.click()}
-              >
-                Browse…
-              </button>
+              <span className="upload-hint">
+                {ecefBusy ? "Parsing…" : "Drop a csv here or click to browse"}
+              </span>
             </div>
-            {ecefBusy && <div className="drop-note">Parsing ECEF csv…</div>}
             {ecefErr && <div className="drop-note">{ecefErr}</div>}
           </div>
         </fieldset>
