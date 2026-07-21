@@ -111,6 +111,7 @@ export const api = {
   enableNode: (name) => request(`/api/v1/nodes/${name}/enable`, { method: "POST" }),
   disableNode: (name) => request(`/api/v1/nodes/${name}/disable`, { method: "POST" }),
   drainNode: (name) => request(`/api/v1/nodes/${name}/drain`, { method: "POST" }),
+  deleteNode: (name) => request(`/api/v1/nodes/${name}`, { method: "DELETE" }),
   setNodeCapabilities: (name, enabled) =>
     request(`/api/v1/nodes/${name}/capabilities`, {
       method: "POST",

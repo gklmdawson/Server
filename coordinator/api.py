@@ -1163,6 +1163,40 @@ def set_node_capabilities(node_name: str, body: NodeCapabilityUpdate, request: R
     }
 
 
+@router.delete("/nodes/{node_name}")
+def delete_node(node_name: str, request: Request,
+                session: Session = Depends(get_session),
+                cfg: CoordinatorConfig = Depends(get_cfg),
+                _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Remove a node record. Only allowed once the node is safely idle — it
+    must be offline or disabled AND have no assigned/running job — so we never
+    delete a machine mid-work. Note: if that machine's agent is still running,
+    it re-registers on its next sync (token-less mode) or is rejected with 401
+    (token mode) — stop the agent before deleting for the removal to stick."""
+    now = utcnow()
+    node = session.execute(
+        select(Node).where(Node.node_name == node_name)
+    ).scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node {node_name} not found")
+
+    online = node.is_online(now, cfg.offline_after_seconds)
+    if online and node.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Node is online and enabled — disable it (or stop its agent) "
+                   "before removing it.")
+    if node_has_active_job(session, node_name):
+        raise HTTPException(
+            status_code=409,
+            detail="Node still has an assigned or running job — wait for it to "
+                   "finish (or cancel it) before removing the node.")
+
+    session.delete(node)
+    logger.info("Deleted node %s", node_name)
+    return {"ok": True, "node_name": node_name, "deleted": True}
+
+
 # ---------------------------------------------------------------------------
 # Dashboard status + health
 # ---------------------------------------------------------------------------

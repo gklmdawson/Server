@@ -143,6 +143,28 @@ function MachineCard({ node, refresh, setError }) {
             Stop draining
           </button>
         )}
+        {/* Remove is offered only once the node is safely idle (offline or
+            disabled), so a machine can't be deleted mid-work. */}
+        {(!node.online || !node.enabled) && (
+          <button
+            className="btn small danger"
+            disabled={busy}
+            title="Remove this machine from the coordinator"
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Remove ${node.node_name} from the coordinator?\n\n` +
+                    "Stop this machine's agent first, or it will re-register " +
+                    "on its next sync."
+                )
+              ) {
+                run(() => api.deleteNode(node.node_name));
+              }
+            }}
+          >
+            Remove
+          </button>
+        )}
       </div>
     </div>
   );

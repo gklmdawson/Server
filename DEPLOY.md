@@ -431,6 +431,15 @@ takes nothing new), then **Enable** when done. The Cyclone box handles the
 "human is using 3DR" case automatically — its agent pauses itself while
 `3DR.exe` is running.
 
+**Retire a machine for good** — stop its agent first (tray **Exit agent**,
+then remove the Scheduled Task or Startup shortcut) so it can't phone home,
+then on the **Machines** tab click **Remove** on that node's card. Remove
+only appears once a node is **offline or disabled**, and the coordinator
+refuses it while the node still has a running job. If you delete a node
+whose agent is still alive, it re-registers on its next sync (token-less
+mode) or is rejected with 401 (token mode) — hence stopping the agent
+first. `DELETE /api/v1/nodes/<name>` is the API equivalent.
+
 **Move the coordinator** — stop the container, copy the whole
 `data-intake/` folder (including `data/`) to the new host,
 `docker compose up -d --build`, repoint each agent's `coordinator_url`
