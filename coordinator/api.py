@@ -14,6 +14,7 @@ Auth:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -43,6 +44,7 @@ from coordinator.intake import (
 )
 from shared.schemas import (
     CancelledReport,
+    EjectRequest,
     EventType,
     FailedReport,
     IntakeSubmit,
@@ -538,9 +540,12 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     parameters. Browsing never leaves the configured root.
     """
     roots = cfg.browse_roots or {}
+    eject_on = bool(cfg.eject_spool_dir)
     if root is None:
         return {"roots": [
-            {"label": label, "display": str(spec.get("display") or spec.get("path", ""))}
+            {"label": label,
+             "display": str(spec.get("display") or spec.get("path", "")),
+             "ejectable": eject_on and bool(spec.get("ejectable"))}
             for label, spec in roots.items() if spec.get("path")
         ]}
 
@@ -633,6 +638,77 @@ def intake_probe(request: Request, root: str, path: str = "", rtk: bool = False,
     if rtk:
         result["rtk"] = probe_mod.rtk_scan(target, cfg.exiftool_path or "exiftool")
     return result
+
+
+def _device_display_prefix(cfg: CoordinatorConfig, root: str, device: str) -> str:
+    """The path a job would use to read `device` under `root` (its display
+    form), so we can tell whether an active job is still reading the card."""
+    spec = (cfg.browse_roots or {})[root]
+    display_root = str(spec.get("display") or spec["path"])
+    sep = "/" if display_root.startswith("/") else "\\"
+    return f"{display_root.rstrip(sep)}{sep}{device}"
+
+
+def _active_job_using(session: Session, prefix: str) -> Optional[str]:
+    """UUID of an ASSIGNED/RUNNING job whose parameters reference `prefix`
+    (the card device path), or None. The substring check is deliberately
+    broad — refusing to eject a card a job might touch is the safe direction."""
+    needle = prefix.replace("\\", "/").lower()
+    rows = session.execute(
+        select(Job.uuid, Job.parameters_json).where(Job.status.in_(ACTIVE_STATUSES))
+    ).all()
+    for uuid, params in rows:
+        blob = json.dumps(params or {}).replace("\\", "/").lower()
+        if needle in blob:
+            return uuid
+    return None
+
+
+@router.post("/intake/eject")
+def intake_eject(request: Request, body: EjectRequest,
+                 cfg: CoordinatorConfig = Depends(get_cfg),
+                 session: Session = Depends(get_session),
+                 _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Safely unmount a removable card on the NAS host. The coordinator can't
+    umount across the container boundary, so it spools the request to the
+    host-side watcher (scripts/nas_eject_watcher.py) and waits for its result."""
+    from coordinator import eject as eject_mod
+
+    if not cfg.eject_spool_dir:
+        raise HTTPException(status_code=404, detail="Media eject is not configured")
+    spec = (cfg.browse_roots or {}).get(body.root)
+    if not spec or not spec.get("path"):
+        raise HTTPException(status_code=404, detail=f"Unknown browse root '{body.root}'")
+    if not spec.get("ejectable"):
+        raise HTTPException(status_code=400,
+                            detail=f"Root '{body.root}' is not ejectable")
+    try:
+        device = eject_mod.validate_device(body.device)
+    except eject_mod.EjectError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # The device must be a real top-level folder under the mount (a card),
+    # not an arbitrary name.
+    base = os.path.realpath(str(spec["path"]))
+    target = os.path.realpath(os.path.join(base, device))
+    if os.path.dirname(target) != base or not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail=f"No such device: {device}")
+
+    busy = _active_job_using(session, _device_display_prefix(cfg, body.root, device))
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A running job ({busy[:8]}) is still reading this card — "
+                   "wait for it to finish before ejecting")
+
+    result = eject_mod.eject(cfg.eject_spool_dir, device, cfg.eject_timeout_seconds)
+    if result.pending:
+        raise HTTPException(status_code=504, detail=result.message)
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message
+                            or "the host could not eject the card")
+    logger.info("Ejected device %s under root %s", device, body.root)
+    return {"ok": True, "device": device, "message": result.message or "Card ejected — safe to remove."}
 
 
 @router.post("/intake/upload", status_code=201)

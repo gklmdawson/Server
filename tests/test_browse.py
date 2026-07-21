@@ -36,7 +36,8 @@ def browse_client(tmp_path, share):
 def test_roots_listing(browse_client):
     data = browse_client.get("/api/v1/browse").json()
     assert data["roots"] == [
-        {"label": "3dData", "display": "\\\\192.168.35.25\\3dData"}]
+        {"label": "3dData", "display": "\\\\192.168.35.25\\3dData",
+         "ejectable": False}]
 
 
 def test_roots_empty_when_unconfigured(client):

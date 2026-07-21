@@ -213,6 +213,14 @@ class JobCreate(BaseModel):
     max_retries: int = 0
 
 
+class EjectRequest(BaseModel):
+    """Safely unmount a removable card on the NAS host (POST /intake/eject).
+    `root` is a browse root marked `ejectable`; `device` is one of its
+    top-level device folders (e.g. "sda1")."""
+    root: str
+    device: str
+
+
 class NodeCreate(BaseModel):
     node_name: str
     capabilities: list[str] = Field(default_factory=list)

@@ -94,6 +94,8 @@ export const api = {
         path
       )}${rtk ? "&rtk=true" : ""}`
     ),
+  eject: (root, device) =>
+    request("/api/v1/intake/eject", { method: "POST", body: { root, device } }),
   uploadIntakeFile: (file) => upload("/api/v1/intake/upload", file),
   parseEcefFile: (file) => upload("/api/v1/intake/parse-ecef", file),
   targetsSummary: (storedPath) =>

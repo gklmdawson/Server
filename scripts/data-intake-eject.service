@@ -1,0 +1,33 @@
+# Host-side media-eject watcher for the Data Intake coordinator.
+#
+# The coordinator container can't unmount the NAS's cards itself; this service
+# (running on the NAS host as root) does the umount when the web UI's Eject
+# button spools a request. See DEPLOY.md "Media eject".
+#
+# Install (adjust the two paths to your NAS):
+#   sudo cp scripts/nas_eject_watcher.py /usr/local/bin/
+#   sudo cp scripts/data-intake-eject.service /etc/systemd/system/
+#   # edit ExecStart below if your spool / USB base differ, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now data-intake-eject
+#   systemctl status data-intake-eject
+#
+# --spool must equal the coordinator's eject_spool_dir as seen ON THE HOST
+# (the host side of the ./data bind mount), e.g.
+# /volume1/docker/data-intake/data/eject.
+
+[Unit]
+Description=Data Intake media eject watcher
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/nas_eject_watcher.py \
+    --spool /volume1/docker/data-intake/data/eject \
+    --usb-base /mnt/@usb
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

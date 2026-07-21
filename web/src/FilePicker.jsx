@@ -93,7 +93,12 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const [listing, setListing] = useState(null);
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
+  const [reloadKey, setReloadKey] = useState(0);
+  const [ejecting, setEjecting] = useState("");   // device name in flight
+  const [ejectMsg, setEjectMsg] = useState(null); // {ok, text}
   const dialogRef = useRef(null);
+
+  const rootIsEjectable = !!roots.find((r) => r.label === rootLabel)?.ejectable;
 
   useEffect(() => {
     dialogRef.current?.showModal();
@@ -112,7 +117,21 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
     return () => {
       stale = true;
     };
-  }, [rootLabel, path]);
+  }, [rootLabel, path, reloadKey]);
+
+  const ejectDevice = async (device) => {
+    setEjecting(device);
+    setEjectMsg(null);
+    try {
+      const r = await api.eject(rootLabel, device);
+      setEjectMsg({ ok: true, text: r.message || `${device} ejected — safe to remove.` });
+      setReloadKey((k) => k + 1); // the device drops off once unmounted
+    } catch (err) {
+      setEjectMsg({ ok: false, text: err.message || "eject failed" });
+    } finally {
+      setEjecting("");
+    }
+  };
 
   const enter = (name) => setPath(path ? `${path}/${name}` : name);
 
@@ -194,6 +213,12 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
         </div>
       )}
 
+      {ejectMsg && (
+        <div className={`banner ${ejectMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
+          {ejectMsg.text}
+        </div>
+      )}
+
       <div className="picker-list">
         {!rootLabel && <div className="empty">Pick a location above.</div>}
         {error && <div className="banner error">{error.message}</div>}
@@ -223,6 +248,20 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               )}
               <span className="picker-icon">{entry.dir ? "📁" : "📄"}</span>
               <span className="picker-name">{entry.name}</span>
+              {rootIsEjectable && path === "" && entry.dir && (
+                <button
+                  type="button"
+                  className="btn small"
+                  title="Safely unmount this card on the NAS"
+                  disabled={!!ejecting}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    ejectDevice(entry.name);
+                  }}
+                >
+                  {ejecting === entry.name ? "Ejecting…" : "⏏ Eject"}
+                </button>
+              )}
               {entry.dir ? (
                 <button
                   type="button"

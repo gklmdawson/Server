@@ -190,6 +190,52 @@ the web form from the flight images.
 To stay on the single-machine model instead, give one Windows agent the
 `INTAKE` capability and skip this section — both paths remain supported.
 
+### 1.7 Eject cards from the web UI (optional)
+
+So crews can safely remove a card without opening the NAS UI, the web
+picker can show an **Eject** button next to each device under the `ingest`
+root. The coordinator container can't `umount` the host's card itself (a
+umount inside the container only affects the container's namespace), so a
+tiny **host-side watcher** does the real unmount; the container just spools
+it a request over the shared `/data` volume.
+
+1. **Turn it on in `data/coordinator.yaml`:** mark the ingest root ejectable
+   and set the spool dir (as the *container* sees it):
+
+   ```yaml
+   browse_roots:
+     3dData: { path: /mnt/3dData, display: \\192.168.35.25\3dData }
+     ingest: { path: /mnt/ingest, display: /mnt/ingest, ejectable: true }
+   eject_spool_dir: /data/eject
+   ```
+
+   `sudo docker compose restart` — the Eject buttons now appear, but they
+   return a "watcher not running" error until step 2.
+
+2. **Install the host watcher** (runs on the NAS itself, as root, so it can
+   unmount). `--spool` is the same folder as the *host* sees it — the host
+   side of the `./data` bind mount:
+
+   ```bash
+   sudo cp scripts/nas_eject_watcher.py /usr/local/bin/
+   sudo cp scripts/data-intake-eject.service /etc/systemd/system/
+   # edit ExecStart in the unit if your spool / USB base differ, then:
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now data-intake-eject
+   systemctl status data-intake-eject      # should be active (running)
+   ```
+
+   The default `ExecStart` uses
+   `--spool /volume1/docker/data-intake/data/eject --usb-base /mnt/@usb`;
+   match `--spool` to wherever your compose folder's `data/eject` lands on
+   the host, and `--usb-base` to where UGOS mounts cards (Part 1.6).
+
+Now in **Submit → Browse → ingest**, each card shows **⏏ Eject**; clicking
+it flushes and unmounts on the NAS and reports "safe to remove". The button
+refuses while an `INTAKE_COPY` job is still reading that card. Nothing here
+changes the container's privileges — the unmount happens entirely in the
+host watcher.
+
 ---
 
 ## Part 2 — Agents on the Windows machines
@@ -412,5 +458,7 @@ admin token, edit `.env` and `docker compose up -d`.
 | Web actions return 401 | Set the admin token via ⚙ — it must match `DATA_INTAKE_ADMIN_TOKEN` in `.env`. |
 | `INTAKE_COPY` fails `source folder not found` | The worker must see that path: on the NAS copy worker it's the `/mnt/ingest` mount (and `path_map` must map the projects-root UNC to `/mnt/3dData`); on a single-machine `INTAKE` agent it's a share/mapping for the processing account. |
 | Card plugged into the NAS but not in Browse | The `ingest` root must be in `browse_roots` (Part 1.6), and the card must be visible inside the container (`sudo docker exec data-intake-coordinator ls /mnt/ingest`). The compose mount uses `rslave` propagation so hot-plugged cards appear live; on older compose files (or if the host mount tree isn't shared) a `sudo docker compose restart` after inserting the card is the fallback. |
+| Eject button says the watcher didn't respond | The host watcher isn't running or points at the wrong spool. `systemctl status data-intake-eject`, and confirm its `--spool` is the host path of the container's `eject_spool_dir` (Part 1.7). |
+| Eject says the card is busy | Something on the NAS still has a file open on it (a copy job, a shell `cd`'d into it, the file manager). Close it and retry. |
 | `git clone` says repository not found | The repo is private — see Part 0 (ZIP download or `gh auth login`). |
 | Container won't start | `sudo docker compose logs` — usually a missing `.env` / `DATA_INTAKE_ADMIN_TOKEN` line. |

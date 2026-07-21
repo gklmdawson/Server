@@ -77,7 +77,18 @@ class CoordinatorConfig:
     #     ingest:                       # the card share, mounted read-only
     #       path: /mnt/ingest
     #       display: /mnt/ingest        # local: only NAS containers read sources
-    browse_roots: dict[str, dict[str, str]] = field(default_factory=dict)
+    #       ejectable: true             # show an Eject button for its devices
+    browse_roots: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Media eject (POST /api/v1/intake/eject). The coordinator runs in a
+    # container and can't unmount the NAS host's card itself, so it drops an
+    # eject request in this SHARED spool dir; a small host-side watcher
+    # (scripts/nas_eject_watcher.py, run as a systemd service) does the actual
+    # umount and writes back the result. Point it at a folder both the
+    # container and the host see — e.g. a subdir of the /data volume. Empty
+    # (default) disables the feature and hides the Eject buttons.
+    eject_spool_dir: str = ""
+    eject_timeout_seconds: float = 15.0
 
     # NAS helper (GET /api/v1/intake/probe): where the coordinator process can
     # read the State Plane shapefile for EPSG auto-detect (its .dbf sibling is

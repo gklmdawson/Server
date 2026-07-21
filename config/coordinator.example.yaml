@@ -61,6 +61,19 @@ browse_roots:
   3dData:
     path: /mnt/3dData
     display: \\192.168.35.25\3dData
+  # The card reader, mounted read-only (see docker-compose.yml). `ejectable`
+  # adds an Eject button per device in the web picker; it needs eject_spool_dir
+  # below AND the host-side watcher running (scripts/nas_eject_watcher.py).
+  # ingest:
+  #   path: /mnt/ingest
+  #   display: /mnt/ingest
+  #   ejectable: true
+
+# Media eject: the coordinator container can't unmount the NAS's cards, so it
+# spools eject requests here for the host watcher to act on. Point it at a
+# folder both the container and host see — a subdir of the /data volume works
+# (container: /data/eject; host: <compose dir>/data/eject). Empty = disabled.
+# eject_spool_dir: /data/eject
 
 # Workflow chain templates instantiated by POST /api/v1/projects.
 templates:
