@@ -150,6 +150,7 @@ class Pix4DAutomation:
     # and define the matching method — run_step()/run_all() dispatch to it
     # automatically via getattr(self, name)().
     STEPS = {
+        1: "check_license",
         2: "click_select_folder",
         3: "select_ppk_folder_path",
         4: "enter_project_name",
@@ -371,6 +372,45 @@ class Pix4DAutomation:
         _logger.warning(f"Still could not verify '{field_label}' after retry: expected '{text}', read back {actual!r}")
         return False
 
+    def get_license(self):
+        """Get the license information for PIX4Dmatic."""
+        self.win.child_window(title="S", control_type="CheckBox").click_input()
+        self.win.child_window(title="Organizations  licenses", control_type="MenuItem").click_input()
+        time.sleep(5)
+        self._click_offset_from_anchor("Organizations and licenses", "Text", dx=0, dy=200)
+        time.sleep(.5)
+        license_check_btn = self.win.child_window(title="Go to device manager", control_type="Button")
+        apply_btn = self.win.child_window(title="Apply", control_type="Button")
+        time.sleep(.5)
+        if license_check_btn: 
+            time.sleep(.5)
+            self._click_offset_from_anchor("Organizations and licenses", "Text", dx=0, dy=300)
+            _logger.info("License check button detected, no license found.")
+        if apply_btn:
+            time.sleep(.5)
+            apply_btn.click_input()
+        
+
+
+        
+
+    def check_license(self):
+        """Check the license status of PIX4Dmatic."""
+        _logger.info("Checking license status...")
+        popup = self.win.child_window(title="Go to Organizations  Licenses", control_type="Button")
+        if popup.exists():
+            send_keys("{ESC}")
+            self.get_license()
+        else:
+            trial_btn = self.win.child_window(title="Start trial", control_type="Button")
+            if trial_btn.exists():
+                _logger.warning("Found 'Start trial' button, proceeding with license activation.")
+                self.get_license()
+            _logger.warning("Could not find 'Start trial' button, license is present.")
+        
+        pass
+
+    
     def click_select_folder(self, max_attempts: int = 5):
         """Step 2 — Click the 'Select folder...' button.
         Not present in the UIA tree until the mouse hovers over it, so we anchor off the
