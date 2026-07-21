@@ -785,6 +785,20 @@ dialog.picker footer {
   outline-offset: -2px;
 }
 
+/* ECEF while empty renders the same dashed dropzone as the uploads; the
+   drag-over state lives on the wrapping field, so light it from there. */
+.ecef-drop.drag-over .upload-drop {
+  border-color: var(--accent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.ecef-zone {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
 /* ECEF: text field + Browse button on one row. */
 .ecef-input-row {
   display: flex;
@@ -804,6 +818,42 @@ dialog.picker footer {
 
 .ecef-input-row .btn.small {
   flex: 0 0 auto;
+}
+
+/* Auto-filled (probe / csv-parsed) fields lock against accidental edits; the
+   padlock button beside them unlocks. Dashed border + track background mark
+   the protected state without dimming the value. */
+.lock-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.lock-row input,
+.lock-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.field input.locked,
+.field select.locked {
+  background: var(--track);
+  color: var(--ink-2);
+  border-style: dashed;
+  opacity: 1;
+}
+
+.btn.small.unlock {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  line-height: 1.5;
+}
+
+/* Source-folder textarea grows with its content (see PathLines). */
+.path-input textarea.autogrow {
+  overflow-y: hidden;
+  resize: none;
+  min-height: 38px;
 }
 
 /* EPSG code -> human-readable name, shown under the code field. */

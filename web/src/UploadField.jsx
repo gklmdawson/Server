@@ -19,6 +19,8 @@ function formatSize(bytes) {
 }
 
 // items: [{ name, size, stored_path, error }]; uploader: async (File) => item.
+// itemNote: optional (item) => string, shown as an extra tag per uploaded file
+// (e.g. the detected Trimble/RINEX type of a base observation).
 export function UploadField({
   label,
   hint,
@@ -28,6 +30,7 @@ export function UploadField({
   items,
   onItems,
   required,
+  itemNote,
 }) {
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -106,7 +109,11 @@ export function UploadField({
               {it.error ? (
                 <span className="hint"> {it.error}</span>
               ) : (
-                <span className="hint"> {formatSize(it.size || 0)}</span>
+                <span className="hint">
+                  {" "}
+                  {formatSize(it.size || 0)}
+                  {itemNote ? ` · ${itemNote(it)}` : ""}
+                </span>
               )}
               <button type="button" className="btn small" onClick={() => remove(i)}>
                 Remove

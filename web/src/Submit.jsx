@@ -7,8 +7,10 @@ import { ErrorBanner } from "./ui.jsx";
 // The intake form replaces data_intake.py's GUI: it collects DECISIONS only.
 // Large flight data stays on the share (addressed by path); the small inputs
 // (base data, targets csv, base ECEF csv) are UPLOADED here. Picking a source
-// folder probes it on the NAS (EXIF) to pre-fill sensor/date/EPSG — all still
-// editable. The heavy work runs as INTAKE_COPY -> RINEX_CONVERT jobs.
+// folder probes it on the NAS (EXIF) to pre-fill sensor/date/EPSG — those
+// auto-filled fields LOCK (🔒) until explicitly unlocked, so a stray click
+// can't silently change a detected value. The heavy work runs as
+// INTAKE_COPY -> RINEX_CONVERT jobs.
 
 function splitLines(text) {
   return text
@@ -18,14 +20,32 @@ function splitLines(text) {
 }
 
 const LIDAR = ["L2", "L3"];
-const BASE_DATA_EXTS = [".t02", ".t04", ".t0b"];
 const DEFAULT_ROOT_PATH = "\\\\192.168.35.25\\3dData";
+
+// Trimble raw base files are T0x (.t02/.t04/.t0b…); anything else the operator
+// drops is treated as already-RINEX (matches data_intake.py's all() rule).
+const isTrimble = (name) => /\.t0\w$/i.test(name || "");
 
 function chainDefaults(sensor) {
   return {
     run_photo_chain: ["M3E", "P1"].includes(sensor) || LIDAR.includes(sensor),
     run_lidar_chain: LIDAR.includes(sensor),
   };
+}
+
+// Small padlock shown beside auto-filled fields; clicking it re-enables edits.
+function Unlock({ onClick }) {
+  return (
+    <button
+      type="button"
+      className="btn small unlock"
+      title="Auto-filled — click to unlock and edit"
+      aria-label="Unlock auto-filled field"
+      onClick={onClick}
+    >
+      🔒
+    </button>
+  );
 }
 
 export default function Submit({ onSubmitted }) {
@@ -37,14 +57,13 @@ export default function Submit({ onSubmitted }) {
     date: "",
     sensor_type: "",
     sources: "",
-    base_data_is_rinex: false,
     ecef: "",
     run_photo_chain: true,
     run_lidar_chain: false,
     epsg_h: "",
     epsg_v: "",
     no_targets: false,
-    classify_model: "",
+    classify_model: "", // blank = skip classification (the default)
     priority: "100",
   });
   const [baseUploads, setBaseUploads] = useState([]); // [{name,size,stored_path,error}]
@@ -55,6 +74,15 @@ export default function Submit({ onSubmitted }) {
   const [result, setResult] = useState(null);
   const [browseRoots, setBrowseRoots] = useState([]);
 
+  // Auto-fill locking: probe/csv-filled fields lock; once the operator unlocks
+  // one, later probes leave it alone (their manual value wins from then on).
+  const [locked, setLocked] = useState({});
+  const [unlockedByUser, setUnlockedByUser] = useState({});
+  const unlock = (key) => {
+    setLocked((l) => ({ ...l, [key]: false }));
+    setUnlockedByUser((u) => ({ ...u, [key]: true }));
+  };
+
   // Probe (NAS helper) state.
   const [probeInfo, setProbeInfo] = useState(null);
   const [probeTarget, setProbeTarget] = useState(null); // {root, path}
@@ -64,6 +92,7 @@ export default function Submit({ onSubmitted }) {
   const [ecefBusy, setEcefBusy] = useState(false);
   const [ecefOver, setEcefOver] = useState(false);
   const [ecefErr, setEcefErr] = useState(null);
+  const [ecefManual, setEcefManual] = useState(false);
   const ecefFileRef = useRef(null);
 
   useEffect(() => {
@@ -86,8 +115,6 @@ export default function Submit({ onSubmitted }) {
               : d.root_path || DEFAULT_ROOT_PATH,
           epsg_h: f.epsg_h || d.epsg_h || "",
           epsg_v: f.epsg_v || d.epsg_v || "",
-          classify_model:
-            f.classify_model || (d.classify_models && d.classify_models[0]) || "",
         }));
       })
       .catch(() => {});
@@ -101,6 +128,12 @@ export default function Submit({ onSubmitted }) {
     const value = e.target.type === "checkbox" ? e.target.checked : e.target.value;
     setForm((f) => ({ ...f, [key]: value }));
   };
+
+  // Base data: Trimble vs RINEX is decided by what was dropped, not a checkbox.
+  const storedBase = baseUploads.filter((u) => u.stored_path);
+  const baseIsRinex = storedBase.length > 0 && storedBase.every((u) => !isTrimble(u.name));
+  const baseMixed =
+    storedBase.some((u) => isTrimble(u.name)) && storedBase.some((u) => !isTrimble(u.name));
 
   // Targets csv: after uploading the all-points csv, preview how it splits by
   // point type. Intake writes SINGLE_TLT.csv (TLT only, for LiDAR) and TAT.csv
@@ -133,14 +166,26 @@ export default function Submit({ onSubmitted }) {
     try {
       const p = await api.probe(root, relPath);
       setProbeInfo(p);
-      setForm((f) => ({
-        ...f,
-        sensor_type: p.sensor || f.sensor_type,
-        date: p.date || f.date,
-        epsg_h: p.epsg_h || f.epsg_h,
-        epsg_v: p.epsg_v || f.epsg_v,
-        ...(p.sensor ? chainDefaults(p.sensor) : {}),
-      }));
+      const filled = {};
+      setForm((f) => {
+        const take = (key, val) => {
+          if (val && !unlockedByUser[key]) {
+            filled[key] = true;
+            return val;
+          }
+          return f[key];
+        };
+        const next = {
+          ...f,
+          sensor_type: take("sensor_type", p.sensor),
+          date: take("date", p.date),
+          epsg_h: take("epsg_h", p.epsg_h),
+          epsg_v: take("epsg_v", p.epsg_v),
+        };
+        if (filled.sensor_type) Object.assign(next, chainDefaults(p.sensor));
+        return next;
+      });
+      setLocked((l) => ({ ...l, ...filled }));
     } catch (err) {
       setProbeInfo({ error: err.message || "probe failed" });
     } finally {
@@ -175,6 +220,7 @@ export default function Submit({ onSubmitted }) {
       const r = await api.parseEcefFile(file);
       const [x, y, z] = r.ecef;
       setForm((f) => ({ ...f, ecef: `${x}, ${y}, ${z}` }));
+      setLocked((l) => ({ ...l, ecef: true }));
     } catch (err) {
       setEcefErr(err.message || "could not parse ECEF csv");
     } finally {
@@ -193,7 +239,7 @@ export default function Submit({ onSubmitted }) {
       sensor_type: form.sensor_type,
       source_folders: splitLines(form.sources),
       base_data_paths: baseUploads.filter((u) => u.stored_path).map((u) => u.stored_path),
-      base_data_is_rinex: form.base_data_is_rinex,
+      base_data_is_rinex: baseIsRinex,
       base_ecef_xyz: ecefParts.length === 3 ? ecefParts.map(Number) : null,
       run_photo_chain: form.run_photo_chain,
       run_lidar_chain: isLidar && form.run_lidar_chain,
@@ -204,7 +250,7 @@ export default function Submit({ onSubmitted }) {
       classify_model: form.run_lidar_chain ? form.classify_model.trim() : "",
       priority: parseInt(form.priority, 10) || 100,
     };
-  }, [form, isLidar, baseUploads, gcpUpload]);
+  }, [form, isLidar, baseUploads, baseIsRinex, gcpUpload]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -246,6 +292,7 @@ export default function Submit({ onSubmitted }) {
   }
 
   const models = options.defaults?.classify_models || [];
+  const showEcefInput = ecefManual || form.ecef.trim() !== "" || locked.ecef;
 
   return (
     <section className="card">
@@ -266,26 +313,44 @@ export default function Submit({ onSubmitted }) {
               <label>
                 Flight date <span className="hint">ddMonYYYY</span>
               </label>
-              <input
-                type="text"
-                required
-                pattern="\d{2}[A-Za-z]{3}\d{4}"
-                value={form.date}
-                onChange={set("date")}
-              />
+              <div className="lock-row">
+                <input
+                  type="text"
+                  required
+                  pattern="\d{2}[A-Za-z]{3}\d{4}"
+                  placeholder="e.g. 10Jul2026"
+                  value={form.date}
+                  readOnly={!!locked.date}
+                  className={locked.date ? "locked" : ""}
+                  onChange={set("date")}
+                />
+                {locked.date && <Unlock onClick={() => unlock("date")} />}
+              </div>
             </div>
           </div>
           <div className="row">
             <div className="field">
-              <label>Sensor</label>
-              <select value={form.sensor_type} onChange={setSensor}>
-                {(options.sensors.length
-                  ? options.sensors
-                  : ["M3E", "P1", "L2", "L3", "R3Pro", "R3ProMobile"]
-                ).map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
+              <label>
+                Sensor <span className="hint">auto-detected from the source folder</span>
+              </label>
+              <div className="lock-row">
+                <select
+                  required
+                  value={form.sensor_type}
+                  onChange={setSensor}
+                  disabled={!!locked.sensor_type}
+                  className={locked.sensor_type ? "locked" : ""}
+                >
+                  <option value="">— select sensor —</option>
+                  {(options.sensors.length
+                    ? options.sensors
+                    : ["M3E", "P1", "L2", "L3", "R3Pro", "R3ProMobile"]
+                  ).map((s) => (
+                    <option key={s}>{s}</option>
+                  ))}
+                </select>
+                {locked.sensor_type && <Unlock onClick={() => unlock("sensor_type")} />}
+              </div>
             </div>
             <div className="field">
               <label>Priority</label>
@@ -339,7 +404,8 @@ export default function Submit({ onSubmitted }) {
                       }`
                     : ", no EPSG (enter manually)"}{" "}
                   from {probeInfo.image_count || 0} image
-                  {probeInfo.image_count === 1 ? "" : "s"}. Everything below is editable.
+                  {probeInfo.image_count === 1 ? "" : "s"}. Auto-filled fields are
+                  locked — click 🔒 to edit.
                   {"  "}
                   <button
                     type="button"
@@ -363,24 +429,22 @@ export default function Submit({ onSubmitted }) {
 
           <UploadField
             label="Base data file(s)"
-            hint=".T02/.T04, or a RINEX obs if already converted — uploaded to the NAS"
-            accept={form.base_data_is_rinex ? null : BASE_DATA_EXTS}
+            hint="Trimble .T0x or RINEX obs — type is auto-detected; uploaded to the NAS"
             multiple
             uploader={api.uploadIntakeFile}
             items={baseUploads}
             onItems={setBaseUploads}
+            itemNote={(it) => (isTrimble(it.name) ? "Trimble" : "RINEX")}
           />
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.base_data_is_rinex}
-              onChange={set("base_data_is_rinex")}
-            />
-            <span>
-              Base data is already RINEX{" "}
-              <span className="why">(skips Trimble conversion; companions are collected)</span>
-            </span>
-          </label>
+          {storedBase.length > 0 && (
+            <div className="tlt-note">
+              {baseMixed
+                ? "Mixed Trimble + RINEX files — treated as Trimble; conversion will run on all of them."
+                : baseIsRinex
+                ? "RINEX base data detected — Trimble conversion is skipped; companion files are collected."
+                : "Trimble base data detected — it will be converted to RINEX."}
+            </div>
+          )}
           <div
             className={`field ecef-drop ${ecefOver ? "drag-over" : ""}`}
             onDragOver={(e) => {
@@ -397,36 +461,72 @@ export default function Submit({ onSubmitted }) {
             <label>
               Corrected base position — ECEF X, Y, Z{" "}
               <span className="hint">
-                optional; type metres, or drop / browse a Point ID,X,Y,Z csv
+                optional; metres, from a Point ID,X,Y,Z csv or typed
               </span>
             </label>
-            <div className="ecef-input-row">
-              <input
-                type="text"
-                placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
-                value={form.ecef}
-                onChange={set("ecef")}
-              />
-              <input
-                ref={ecefFileRef}
-                type="file"
-                accept=".csv"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  if (e.target.files?.length) takeEcefFile(e.target.files[0]);
-                  e.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                className="btn small"
-                disabled={ecefBusy}
+            <input
+              ref={ecefFileRef}
+              type="file"
+              accept=".csv"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                if (e.target.files?.length) takeEcefFile(e.target.files[0]);
+                e.target.value = "";
+              }}
+            />
+            {showEcefInput ? (
+              <div className="ecef-input-row lock-row">
+                <input
+                  type="text"
+                  placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
+                  value={form.ecef}
+                  readOnly={!!locked.ecef}
+                  className={locked.ecef ? "locked" : ""}
+                  onChange={set("ecef")}
+                />
+                {locked.ecef ? (
+                  <Unlock
+                    onClick={() => {
+                      unlock("ecef");
+                      setEcefManual(true);
+                    }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={ecefBusy}
+                    onClick={() => ecefFileRef.current?.click()}
+                  >
+                    Browse…
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div
+                className="upload-drop ecef-zone"
                 onClick={() => ecefFileRef.current?.click()}
+                role="button"
+                tabIndex={0}
               >
-                Browse…
-              </button>
-            </div>
-            {ecefBusy && <div className="drop-note">Parsing ECEF csv…</div>}
+                <span className="upload-hint">
+                  {ecefBusy
+                    ? "Parsing ECEF csv…"
+                    : "Drop a Point ID,X,Y,Z csv here or click to browse"}
+                </span>
+                <button
+                  type="button"
+                  className="btn small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEcefManual(true);
+                  }}
+                >
+                  Type it manually
+                </button>
+              </div>
+            )}
+            {ecefBusy && showEcefInput && <div className="drop-note">Parsing ECEF csv…</div>}
             {ecefErr && <div className="drop-note">{ecefErr}</div>}
           </div>
         </fieldset>
@@ -458,38 +558,57 @@ export default function Submit({ onSubmitted }) {
             </span>
           </label>
 
-          <div className="row3">
-            <div>
-              <UploadField
-                label="Targets / GCP csv"
-                hint="all points (TAT, TLT, misc) — split at intake"
-                accept={[".csv"]}
-                uploader={api.uploadIntakeFile}
-                items={gcpUpload}
-                onItems={onGcpItems}
-              />
-              {tltInfo && (
-                <div className={`tlt-note ${tltInfo.error ? "tlt-err" : ""}`}>
-                  {tltInfo.busy && "Reading targets csv…"}
-                  {tltInfo.error && `Targets csv: ${tltInfo.error}`}
-                  {tltInfo.tlt_count != null &&
-                    `${tltInfo.total_rows} point${tltInfo.total_rows === 1 ? "" : "s"}: ` +
-                      `${tltInfo.tlt_count} TLT → SINGLE_TLT.csv (LiDAR), ` +
-                      `${tltInfo.tat_count} TAT+TLT → TAT.csv (Pix4D). ` +
-                      "Both saved to the project folder at intake."}
-                </div>
-              )}
-            </div>
+          <div>
+            <UploadField
+              label="Targets / GCP csv"
+              hint="all points (TAT, TLT, misc) — split at intake"
+              accept={[".csv"]}
+              uploader={api.uploadIntakeFile}
+              items={gcpUpload}
+              onItems={onGcpItems}
+            />
+            {tltInfo && (
+              <div className={`tlt-note ${tltInfo.error ? "tlt-err" : ""}`}>
+                {tltInfo.busy && "Reading targets csv…"}
+                {tltInfo.error && `Targets csv: ${tltInfo.error}`}
+                {tltInfo.tlt_count != null &&
+                  `${tltInfo.total_rows} point${tltInfo.total_rows === 1 ? "" : "s"}: ` +
+                    `${tltInfo.tlt_count} TLT → SINGLE_TLT.csv (LiDAR), ` +
+                    `${tltInfo.tat_count} TAT+TLT → TAT.csv (Pix4D). ` +
+                    "Both saved to the project folder at intake."}
+              </div>
+            )}
+          </div>
+
+          <div className="row">
             <div className="field">
               <label>EPSG horizontal</label>
-              <input type="text" value={form.epsg_h} onChange={set("epsg_h")} />
+              <div className="lock-row">
+                <input
+                  type="text"
+                  value={form.epsg_h}
+                  readOnly={!!locked.epsg_h}
+                  className={locked.epsg_h ? "locked" : ""}
+                  onChange={set("epsg_h")}
+                />
+                {locked.epsg_h && <Unlock onClick={() => unlock("epsg_h")} />}
+              </div>
               {epsgName(form.epsg_h) && (
                 <span className="hint epsg-name">{epsgName(form.epsg_h)}</span>
               )}
             </div>
             <div className="field">
               <label>EPSG vertical</label>
-              <input type="text" value={form.epsg_v} onChange={set("epsg_v")} />
+              <div className="lock-row">
+                <input
+                  type="text"
+                  value={form.epsg_v}
+                  readOnly={!!locked.epsg_v}
+                  className={locked.epsg_v ? "locked" : ""}
+                  onChange={set("epsg_v")}
+                />
+                {locked.epsg_v && <Unlock onClick={() => unlock("epsg_v")} />}
+              </div>
               {epsgName(form.epsg_v) && (
                 <span className="hint epsg-name">{epsgName(form.epsg_v)}</span>
               )}
@@ -501,7 +620,7 @@ export default function Submit({ onSubmitted }) {
               <div className="field">
                 <label>
                   3DR classification model{" "}
-                  <span className="hint">blank = skip classification</span>
+                  <span className="hint">defaults to skip</span>
                 </label>
                 {models.length > 0 ? (
                   <select value={form.classify_model} onChange={set("classify_model")}>

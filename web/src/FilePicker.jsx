@@ -322,14 +322,23 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
 }
 
 // Multi-path textarea, one path per line (source folders, base data files).
+// Grows with its content so every added path stays visible without scrolling.
 export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
+  const taRef = useRef(null);
   const append = (text) => {
     const existing = value.trim();
     onChange(existing ? `${existing}\n${text}` : text);
   };
   const { over, props } = useDropProps(append, setNote);
+
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [value]);
 
   return (
     <div className="field">
@@ -338,6 +347,9 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
       </label>
       <div className={`path-input ${over ? "drag-over" : ""}`} {...props}>
         <textarea
+          ref={taRef}
+          className="autogrow"
+          rows={2}
           required={required}
           value={value}
           onChange={(e) => onChange(e.target.value)}
