@@ -221,6 +221,21 @@ Invoke-RestMethod -Method Post -Uri http://<nas-ip>:8443/api/v1/nodes `
   -Body '{"node_name":"TERRA-01","capabilities":["TERRA_PPK","TERRA_LIDAR"]}'
 ```
 
+Or the same call from a plain **Command Prompt** (`curl` ships with
+Windows 10/11) — one line, and the `\"` escapes inside `-d` are required
+for cmd to pass the JSON quotes through:
+
+```cmd
+curl -X POST http://<nas-ip>:8443/api/v1/nodes -H "Authorization: Bearer YOUR_ADMIN_TOKEN" -H "Content-Type: application/json" -d "{\"node_name\":\"TERRA-01\",\"capabilities\":[\"TERRA_PPK\",\"TERRA_LIDAR\"]}"
+```
+
+An all-Windows-capabilities box (see `config/agent-all.example.yaml`)
+declares every type and gets trimmed per-machine on the Machines tab:
+
+```cmd
+curl -X POST http://<nas-ip>:8443/api/v1/nodes -H "Authorization: Bearer YOUR_ADMIN_TOKEN" -H "Content-Type: application/json" -d "{\"node_name\":\"WIN-01\",\"capabilities\":[\"RINEX_CONVERT\",\"TERRA_PPK\",\"TERRA_LIDAR\",\"PIX4D_MATIC\",\"CYCLONE_CLASSIFY\"]}"
+```
+
 The response includes the node's **token — shown exactly once**; save it for
 step 2.3. Repeat for `WIN-RINEX` (`RINEX_CONVERT`), `PIX4D-01`, `CYCLONE-01`, …
 (or `INTAKE-01` with `INTAKE` on the single-machine model). The NAS `INTAKE_COPY`
