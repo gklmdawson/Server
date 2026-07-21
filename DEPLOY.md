@@ -207,6 +207,12 @@ pip install -e ".[agent,dev]"
 py build.py agent
 ```
 
+The `pip install` line is only needed the first time — and again whenever
+the dependency list in `pyproject.toml` changes (as it did when the
+system-tray mode added `pystray`); re-running it when nothing changed is
+harmless. `py build.py agent` is the actual build and is needed after any
+code change.
+
 Copy `dist\DataIntakeAgent.exe` to the NAS dist share (same place the
 `DJI_AUTOMATE_*.exe` payloads live).
 
@@ -259,8 +265,29 @@ worker is provisioned the same way — see Part 1.6.
    it's *allowed* to run day-to-day is toggled on the dashboard, not here.
 3. Run `scripts\install_agent.ps1` as admin — it stores the node token for
    the processing account and registers the at-logon Scheduled Task.
+   (No admin rights on the box? See 2.4 below.)
 4. Log the processing account in (auto-logon recommended). The machine shows
    up on the **Machines** tab within seconds.
+
+**The agent lives in the system tray.** On Windows it starts minimized to a
+tray icon (navy square with a yellow band) instead of an open console
+window. Double-click the icon for the **status window** — node, current
+state, running job with progress, last sync, and a live log tail. Closing
+that window only hides it back to the tray; the worker keeps running.
+The tray menu also offers:
+
+* **Open dashboard** — the coordinator web UI in a browser.
+* **Open logs folder** — the agent's `logs\` directory.
+* **Sync now** — poke the coordinator immediately instead of waiting out
+  the poll interval.
+* **Pause new jobs** — a local drain switch: the running job finishes but
+  nothing new is taken, and the dashboard shows the node **Paused** with
+  the reason until you resume.
+* **Exit agent** — the only way to stop it; quitting is always this
+  deliberate menu action, never a stray click on an X.
+
+`DataIntakeAgent.exe --no-tray` runs the old plain console loop instead
+(it is also the automatic fallback if the tray cannot start).
 
 **Entering the token without editing files (recommended):** run
 
@@ -276,14 +303,47 @@ no admin, and re-pasting a rotated token is a five-second fix. Token resolution
 order is: explicit `token` in YAML → `agent_setup.json` / `token_file` → the
 `DATA_INTAKE_NODE_TOKEN` env var.
 
-**Non-admin machines:** `install_agent.ps1` needs admin (Program Files +
-Scheduled Task). Without it, install into a user-writable folder, set
-`work_root` there, run `--setup` to save the token, and add a Startup-folder
-shortcut to `DataIntakeAgent.exe --config <path>` for at-logon launch.
-
 **Agent updates later:** build the new EXE to the dist share, run
 `scripts\update_agent.ps1` on each box. The dashboard shows every node's
 agent version, so stragglers are visible.
+
+### 2.4 Installing without admin rights
+
+`install_agent.ps1` needs an elevated PowerShell (it writes to Program
+Files and registers a Scheduled Task). On a box where you can't elevate,
+everything still works from the user profile — no admin, no `setx`, no
+environment variables:
+
+1. **Make a user-owned folder**, e.g. `C:\Users\<you>\DataIntakeAgent`,
+   and copy in `DataIntakeAgent.exe` plus `agent.yaml` (start from
+   `config/agent.example.yaml`, or `config/agent-all.example.yaml` for an
+   all-capabilities box).
+2. **Edit `agent.yaml`:** set `node_name` (must match how the node was
+   provisioned in 2.2), `coordinator_url: http://<nas-ip>:8443`, and point
+   the work root inside the same folder so every write stays user-owned:
+
+   ```yaml
+   work_root: C:/Users/<you>/DataIntakeAgent/work
+   ```
+3. **Enter the token:** run `DataIntakeAgent.exe --setup`, paste the
+   coordinator URL and this node's token, **Save & Test** until it shows
+   green. The values land in `agent_setup.json` inside the work root —
+   a plain user file, which is exactly why no admin is needed.
+4. **Auto-start at logon:** press `Win+R`, run `shell:startup`, and in the
+   folder that opens right-click → New → Shortcut with the target:
+
+   ```text
+   "C:\Users\<you>\DataIntakeAgent\DataIntakeAgent.exe" --config "C:\Users\<you>\DataIntakeAgent\agent.yaml"
+   ```
+
+   Log out and back in (or double-click the shortcut once) — the tray icon
+   appears and the node shows up on the **Machines** tab.
+
+Two trade-offs versus the admin install: the Startup shortcut does not
+auto-restart the agent if it crashes (the Scheduled Task does — use
+**Exit agent** → relaunch the shortcut after an update), and anything under
+your user profile is per-user, so if a different account will run the
+processing apps, do these steps as *that* account.
 
 ---
 
@@ -345,7 +405,8 @@ admin token, edit `.env` and `docker compose up -d`.
 
 | Symptom | Check |
 |---|---|
-| Machine shows **Offline** | Is the agent console running in the logged-in session on that box? `coordinator_url` correct? Token env set (re-run install script)? |
+| Machine shows **Offline** | Is the agent running in the logged-in session on that box (tray icon present)? `coordinator_url` correct? Token saved (`--setup`) or env set (re-run install script)? |
+| Machine shows **Paused** with "paused from the agent's tray menu" | Someone flipped **Pause new jobs** in the tray — untick it there (or restart the agent) to resume. |
 | Machine shows **Paused** | Its own preflight is failing — the reason is on its card (locked desktop, wrong DPI/resolution, app already open by a person, NAS unreachable). |
 | Job stuck **Queued** | Is some *online* machine's toggle for that job type on (Machines tab)? Are the job's "waiting on" dependencies finished? |
 | Web actions return 401 | Set the admin token via ⚙ — it must match `DATA_INTAKE_ADMIN_TOKEN` in `.env`. |

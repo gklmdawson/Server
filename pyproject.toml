@@ -26,7 +26,8 @@ coordinator = [
 agent = [
     "httpx>=0.26",
     "psutil>=5.9",
-    "Pillow>=10",     # failure-bundle screenshots (Windows)
+    "Pillow>=10",     # failure-bundle screenshots + tray icon (Windows)
+    "pystray>=0.19 ; platform_system == 'Windows'",  # system-tray mode
 ]
 # The GUI-automation payload scripts (Windows workstations only).
 automation = [
@@ -49,6 +50,7 @@ dev = [
     "pyinstaller>=6",
     "python-multipart>=0.0.9",
     "Pillow>=10",
+    "pystray>=0.19 ; platform_system == 'Windows'",  # bundled into the agent EXE
 ]
 
 [project.scripts]

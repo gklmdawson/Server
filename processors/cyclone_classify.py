@@ -126,10 +126,11 @@ class CycloneClassifyProcessor(Processor):
         deadline = time.monotonic() + float(
             ctx.parameters.get("per_file_timeout_hours", 6)) * 3600
 
-        from agent.runner import kill_tree  # local import avoids a cycle
+        from agent.runner import NO_WINDOW, kill_tree  # local import avoids a cycle
         proc = subprocess.Popen(self.build_file_command(ctx, las),
                                 stdout=log_file, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL)
+                                stdin=subprocess.DEVNULL,
+                                creationflags=NO_WINDOW)
         try:
             while time.monotonic() < deadline:
                 if cancelled():

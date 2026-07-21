@@ -1,9 +1,12 @@
 """Agent entry point: one sync loop that is also the heartbeat.
 
 Run in development:  python -m agent.main --config config/agent.yaml
-PyInstaller build:   py build.py agent  ->  DataIntakeAgent.exe
+PyInstaller build:   py build.py agent  ->  DataIntakeAgent.exe (windowed)
 Deployed via Task Scheduler at logon of the processing account
 (scripts/install_agent.ps1) so payload GUIs land on the visible desktop.
+On Windows the agent runs as a system-tray icon (agent/tray.py) — the
+status window hides on close instead of killing the worker; --no-tray
+(and every non-Windows platform) runs this plain console loop instead.
 
 The loop: recover any interrupted job, then sync forever — each sync carries
 telemetry + active-job progress and brings back an assignment and/or cancel
@@ -33,7 +36,11 @@ logger = logging.getLogger("agent")
 
 def setup_logging(cfg: AgentConfig) -> None:
     cfg.ensure_dirs()
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    # A windowed (no-console) PyInstaller build has sys.stdout = None; the
+    # rotating file log is then the only stream (and the tray window tails it).
+    handlers: list[logging.Handler] = []
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
     try:
         handlers.append(logging.handlers.RotatingFileHandler(
             cfg.logs_dir / "agent.log", maxBytes=5_000_000, backupCount=5,
@@ -58,6 +65,12 @@ class Agent:
                                 on_finished=self.wake_event.set)
         self.registry = registry
         self._preflight_reasons: list[str] = []
+        # Tray-mode surface: a local pause switch plus the last sync outcome,
+        # read by the status window (agent/tray.py).
+        self.paused = False
+        self.last_sync_ok: bool | None = None
+        self.last_sync_at: float | None = None
+        self.last_sync_error = ""
 
     # --- readiness -----------------------------------------------------------
 
@@ -65,6 +78,8 @@ class Agent:
         """Environment preflight BEFORE requesting work. Failing checks pause
         assignment (visible on the dashboard) instead of failing jobs."""
         reasons: list[str] = []
+        if self.paused:
+            reasons.append("paused from the agent's tray menu")
         needs_desktop = any(p.requires_desktop for p in self.registry.values())
         if needs_desktop:
             reasons += desktop_errors(self.cfg.expected_resolution,
@@ -115,7 +130,11 @@ class Agent:
             try:
                 resp = self.client.sync(self.cfg.node_name, self.build_sync_request())
                 backoff = 5.0
+                self.last_sync_ok, self.last_sync_at = True, time.time()
+                self.last_sync_error = ""
             except Exception as exc:
+                self.last_sync_ok, self.last_sync_at = False, time.time()
+                self.last_sync_error = str(exc)
                 logger.warning("Sync failed (%s); retrying in %.0fs",
                                exc, min(backoff, 60.0))
                 self._sleep(min(backoff, 60.0))
@@ -151,6 +170,20 @@ class Agent:
         self.stop_event.set()
         self.wake_event.set()
 
+    def status_snapshot(self) -> dict:
+        """Point-in-time view for the tray status window; local-only (the
+        coordinator gets its own picture through sync)."""
+        return {
+            "node": self.cfg.node_name,
+            "url": self.cfg.coordinator_url,
+            "job": self.runner.active_summary(),
+            "paused": self.paused,
+            "preflight": list(self._preflight_reasons),
+            "last_sync_ok": self.last_sync_ok,
+            "last_sync_at": self.last_sync_at,
+            "last_sync_error": self.last_sync_error,
+        }
+
 
 def _computer_name() -> str:
     import platform
@@ -171,6 +204,9 @@ def run() -> None:
     parser.add_argument("--setup", action="store_true",
                         help="open the setup window to enter the coordinator URL "
                              "and node token, then exit")
+    parser.add_argument("--no-tray", action="store_true",
+                        help="run the plain console loop instead of the Windows "
+                             "system-tray mode")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -197,6 +233,13 @@ def run() -> None:
     signal.signal(signal.SIGINT, agent.request_stop)
     signal.signal(signal.SIGTERM, agent.request_stop)
     try:
+        # On Windows the agent lives in the system tray (closing the status
+        # window hides it; Exit is a deliberate menu action). Linux/containers
+        # and --no-tray run the plain loop.
+        if sys.platform == "win32" and not args.no_tray:
+            from agent.tray import run_with_tray
+            if run_with_tray(agent, cfg):
+                return
         agent.run()
     finally:
         client.close()

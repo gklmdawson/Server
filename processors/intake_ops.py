@@ -299,7 +299,8 @@ def batch_convert(
             on_status(f"Converting {file_name} to RINEX…")
             subprocess.run(command, check=True, timeout=timeout,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if base_ecef_xyz is not None:
                 patch_approx_position(folder_path, x, y, z, on_status)
             rename_mix_to_nav(folder_path, on_status)

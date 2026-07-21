@@ -52,9 +52,14 @@ BUILDS = {
     "agent": {
         "name":   "DataIntakeAgent",
         "script": SCRIPT_DIR / "agent" / "main.py",
-        # tkinter is imported lazily by --setup, so name it explicitly for
-        # PyInstaller's static analysis to bundle the setup window.
-        "extra":  ["--hidden-import", "tkinter", "--hidden-import", "tkinter.ttk"],
+        # tkinter is imported lazily (--setup + the tray status window), and
+        # pystray picks its Win32 backend dynamically — name both explicitly
+        # for PyInstaller's static analysis.
+        "extra":  ["--hidden-import", "tkinter", "--hidden-import", "tkinter.ttk",
+                   "--hidden-import", "pystray._win32"],
+        # Windowed: the agent lives in the system tray (agent/tray.py), not a
+        # console window that a stray click can close.
+        "windowed": True,
     },
     "coordinator": {
         "name":   "DataIntakeCoordinator",
@@ -124,7 +129,7 @@ def build(target: str) -> int:
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
-        "--console",
+        "--windowed" if cfg.get("windowed") else "--console",
         "--name",      cfg["name"],
         "--distpath",  str(SCRIPT_DIR / "dist"),
         "--workpath",  str(SCRIPT_DIR / "build"),

@@ -57,11 +57,17 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+# The agent EXE is windowed (tray mode) — without a parent console, console
+# child processes (payload EXEs, taskkill) would each pop an empty console
+# window on the worker's desktop unless spawned with CREATE_NO_WINDOW.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def kill_tree(pid: int) -> None:
     """Kill a process and all its descendants."""
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       capture_output=True)
+                       capture_output=True, creationflags=NO_WINDOW)
         return
     try:
         proc = psutil.Process(pid)
@@ -146,6 +152,14 @@ class JobRunner:
                 progress_message=self._active.get("message", ""),
             )]
 
+    def active_summary(self) -> Optional[dict[str, Any]]:
+        """Local-only view of the running job for the tray status window
+        (includes job_type, which the sync wire format does not carry)."""
+        with self._lock:
+            if self._active is None or self._thread is None or not self._thread.is_alive():
+                return None
+            return dict(self._active)
+
     def request_cancel(self, job_uuid: str) -> None:
         with self._lock:
             active = self._active
@@ -158,7 +172,9 @@ class JobRunner:
             if self._thread is not None and self._thread.is_alive():
                 return False
             self._cancel_event = threading.Event()
-            self._active = {"uuid": assignment.job_uuid, "percent": None, "message": ""}
+            self._active = {"uuid": assignment.job_uuid,
+                            "job_type": assignment.job_type,
+                            "percent": None, "message": ""}
             self._thread = threading.Thread(
                 target=self._run_assignment, args=(assignment,),
                 name=f"job-{assignment.job_uuid[:8]}", daemon=True,
@@ -328,6 +344,7 @@ class JobRunner:
                 proc = subprocess.Popen(
                     cmd, stdout=log_file, stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL, cwd=str(ctx.work_dir),
+                    creationflags=NO_WINDOW,
                 )
             except Exception as exc:
                 artifacts = self._make_failure_bundle(ctx, f"launch failed: {exc}")
