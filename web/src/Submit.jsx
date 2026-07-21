@@ -105,17 +105,25 @@ export default function Submit({ onSubmitted }) {
       .then((opts) => {
         setOptions(opts);
         const d = opts.defaults || {};
-        setForm((f) => ({
-          ...f,
-          // Config may override the built-in default; a value the operator has
-          // already typed always wins.
-          root_path:
-            f.root_path && f.root_path !== DEFAULT_ROOT_PATH
-              ? f.root_path
-              : d.root_path || DEFAULT_ROOT_PATH,
-          epsg_h: f.epsg_h || d.epsg_h || "",
-          epsg_v: f.epsg_v || d.epsg_v || "",
-        }));
+        // Config-default EPSG counts as auto-filled too, so it locks the same
+        // way probe values do.
+        const filled = {};
+        setForm((f) => {
+          if (!f.epsg_h && d.epsg_h) filled.epsg_h = true;
+          if (!f.epsg_v && d.epsg_v) filled.epsg_v = true;
+          return {
+            ...f,
+            // Config may override the built-in default; a value the operator
+            // has already typed always wins.
+            root_path:
+              f.root_path && f.root_path !== DEFAULT_ROOT_PATH
+                ? f.root_path
+                : d.root_path || DEFAULT_ROOT_PATH,
+            epsg_h: f.epsg_h || d.epsg_h || "",
+            epsg_v: f.epsg_v || d.epsg_v || "",
+          };
+        });
+        setLocked((l) => ({ ...l, ...filled }));
       })
       .catch(() => {});
   }, []);
