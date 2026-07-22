@@ -26,9 +26,11 @@ stages the run onto local disk:
 
 Without scratch_dir the run happens in place on the NAS, unchanged.
 
-Once the on-machine save-project + close-app steps are added to
-AutomatePix4D.py, the payload itself will block until done and after_exit's
-first poll will pass immediately — this processor needs no change for that.
+AutomatePix4D.py now runs on-machine save-project + close-app steps at the end
+(wait_for_processing → save_project → close_pix4d), so the payload itself blocks
+until the ortho export lands and after_exit's first poll typically passes
+immediately. after_exit still re-verifies completion independently (the two use
+the same ortho glob) so a payload that exits early is still caught here.
 
 Job parameters: project_name, project_root (the date folder), epsg_h, epsg_v,
 tat_path (the targets/TAT csv, used as-is).

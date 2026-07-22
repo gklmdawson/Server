@@ -48,6 +48,18 @@ UNATTENDED = False
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")  # matches data_intake.py's Config.IMAGE_EXTENSIONS
 
+# --- end-of-run save/close ----------------------------------------------------
+# The orthomosaic export is Pix4Dmatic's final deliverable. wait_for_processing
+# watches the filesystem for it to appear and stop growing under PROJECT_ROOT
+# rather than trying to read a "processing finished" state out of the fragile,
+# offset-driven UIA tree. This deliberately mirrors the server-side
+# Pix4dMaticProcessor completion check (processors/pix4dmatic.py's
+# DEFAULT_ORTHO_GLOB) so the payload and the agent agree on what "complete" means.
+ORTHO_GLOB = "Pix4[dD]/**/exports/*ortho*.tif*"
+PROCESSING_TIMEOUT_SECONDS = 24 * 3600  # give up waiting after this long
+PROCESSING_POLL_SECONDS = 30            # filesystem poll cadence while waiting
+ORTHO_STABLE_SECONDS = 5               # ortho must hold its size this long to count as done
+
 
 def _count_images(root: str) -> int:
     """Recursively count image files (IMAGE_EXTENSIONS) under root."""
@@ -162,11 +174,19 @@ class Pix4DAutomation:
         10: "fix_camera",
         11: "insert_targets",
         12: "start_processing",
+        13: "wait_for_processing",
+        14: "save_project",
+        15: "close_pix4d",
     }
 
     def __init__(self):
         self.win = None
         self.proc = None
+        # Set False by wait_for_processing() if the run never demonstrably
+        # completed, so close_pix4d() leaves an unfinished run open for
+        # inspection. Defaults True so a step run in isolation (--step 15)
+        # still closes.
+        self._processing_complete = True
 
     def launch(self):
         """Step 1 — Launch PIX4Dmatic if it isn't already running."""
@@ -618,6 +638,124 @@ class Pix4DAutomation:
     def start_processing(self):
         """Step 12 - Click the 'Start processing' button """
         self._button_push("Start")
+
+    def _ensure_window(self):
+        """Re-resolve self.win if the handle went stale during the long
+        processing wait. Reuses _find_pix4d_window (the same pywinauto
+        Application/Desktop connect used at launch) so save/close can drive
+        the window even if it was recreated while we waited."""
+        try:
+            if self.win is not None and self.win.exists():
+                return
+        except Exception:
+            pass
+        _logger.info("Re-resolving PIX4Dmatic window after processing wait...")
+        self.win = _find_pix4d_window(timeout=30)
+
+    def wait_for_processing(self):
+        """Step 13 - Block until Pix4Dmatic finishes processing.
+
+        Watches PROJECT_ROOT for the orthomosaic export (Pix4Dmatic's final
+        deliverable) to appear and hold its size for ORTHO_STABLE_SECONDS,
+        rather than reading a 'done' state out of the offset-driven UIA tree.
+        Sets self._processing_complete so close_pix4d() knows whether it's
+        safe to shut the app down; on timeout it stays open for inspection."""
+        root = Path(PROJECT_ROOT)
+        deadline = time.time() + PROCESSING_TIMEOUT_SECONDS
+        _logger.info(
+            f"Waiting for processing to finish — watching for ortho matching "
+            f"'{ORTHO_GLOB}' under {root} (timeout "
+            f"{PROCESSING_TIMEOUT_SECONDS / 3600:.1f}h)."
+        )
+        while time.time() < deadline:
+            orthos = [p for p in root.glob(ORTHO_GLOB) if p.is_file()]
+            if orthos:
+                newest = max(orthos, key=lambda p: p.stat().st_mtime)
+                size1 = newest.stat().st_size
+                time.sleep(ORTHO_STABLE_SECONDS)
+                if size1 > 0 and newest.stat().st_size == size1:
+                    _logger.info(
+                        f"Processing complete — ortho ready: {newest} ({size1} bytes)."
+                    )
+                    self._processing_complete = True
+                    return True
+                _logger.info(
+                    f"Ortho '{newest.name}' still being written ({size1} bytes) — waiting..."
+                )
+            time.sleep(PROCESSING_POLL_SECONDS)
+        _logger.warning(
+            f"Processing did not complete within "
+            f"{PROCESSING_TIMEOUT_SECONDS / 3600:.1f}h (no stable ortho matching "
+            f"'{ORTHO_GLOB}' under {root})."
+        )
+        self._processing_complete = False
+        return False
+
+    def _confirm_save_dialog(self, timeout: int = 3):
+        """Best-effort: if a save prompt appeared (either a 'Save changes
+        before closing?' message box or a 'Save As' browse dialog), click the
+        affirmative button that keeps the work. The project Path was already
+        set in enter_path_name(), so a plain Ctrl+S usually saves silently and
+        this is a no-op — it only acts when a dialog is actually present."""
+        for title in ("Save", "Yes", "Save As"):
+            try:
+                btn = self.win.child_window(title=title, control_type="Button")
+                if btn.exists(timeout=timeout / 3):
+                    _logger.info(f"Confirming save dialog via '{title}' button.")
+                    btn.click_input()
+                    time.sleep(0.5)
+                    return
+            except Exception:
+                continue
+
+    def save_project(self):
+        """Step 14 - Save the project. Prefer a real 'Save' button in the UIA
+        tree; if it isn't present, fall back to the Ctrl+S hotkey. Either way,
+        confirm any save/overwrite dialog that pops up so work isn't lost."""
+        self._ensure_window()
+        self.bring_to_front()
+        time.sleep(0.5)
+        save_btn = self.win.child_window(title="Save", control_type="Button")
+        if save_btn.exists():
+            _logger.info("'Save' button found — clicking it.")
+            save_btn.click_input()
+        else:
+            _logger.info("No 'Save' button in the UIA tree — sending Ctrl+S.")
+            send_keys("^s")
+        time.sleep(1)
+        self._confirm_save_dialog()
+        _logger.info("Project saved.")
+
+    def close_pix4d(self):
+        """Step 15 - Close PIX4Dmatic once processing is finished. Posts
+        WM_CLOSE to the main window for a clean shutdown, then confirms any
+        'save changes?' prompt. Skipped with a warning if wait_for_processing
+        determined the run never completed, so a failed/partial run is left
+        open for a human to inspect."""
+        if not self._processing_complete:
+            _logger.warning(
+                "Processing did not complete — leaving PIX4Dmatic open for inspection."
+            )
+            return
+        self._ensure_window()
+        self.bring_to_front()
+        hwnd = self.win.handle
+        WM_CLOSE = 0x0010
+        _logger.info(f"Closing PIX4Dmatic (HWND {hwnd})...")
+        ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        time.sleep(2)
+        # A 'save changes before closing?' prompt may still appear — keep the work.
+        self._confirm_save_dialog()
+        # If this instance launched PIX4Dmatic, give it a moment to exit cleanly.
+        if self.proc is not None:
+            try:
+                self.proc.wait(timeout=30)
+                _logger.info("PIX4Dmatic process exited.")
+            except Exception:
+                _logger.info("PIX4Dmatic still shutting down after close request.")
+        else:
+            _logger.info("PIX4Dmatic close requested.")
+
     # def open_templates(self):
     #     """Step 10 - Click the 'Settings' button (far-left edge of the screen,
     #     at the '2D' checkbox's height + offset)."""
