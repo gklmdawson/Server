@@ -552,6 +552,16 @@ MAX_BROWSE_ENTRIES = 5000
 BROWSE_SKIP_PREFIXES = (".", "@", "#", "~$")
 
 
+def _st_dev(path: str) -> Optional[int]:
+    """Device id of the filesystem `path` lives on (None if unreadable).
+    A folder whose st_dev differs from its parent's is a mount point — i.e.
+    a drive is actually attached there."""
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return None
+
+
 @router.get("/browse")
 def browse(request: Request, root: Optional[str] = None, path: str = "",
            cfg: CoordinatorConfig = Depends(get_cfg),
@@ -562,6 +572,13 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     With `root` (+ optional slash-separated relative `path`): the folder's
     entries, plus the `display_path` (UNC form) the picker writes into job
     parameters. Browsing never leaves the configured root.
+
+    Roots flagged `mounted_only` (default for `ejectable` roots) are
+    removable-media roots like the NAS card reader: the host keeps a
+    mount-point folder per USB device it has ever seen, so the top level only
+    lists folders with a drive actually mounted on them (st_dev differs from
+    the root's) instead of every stale empty mount dir. Deeper levels are
+    inside a mounted drive and are never filtered.
     """
     roots = cfg.browse_roots or {}
     eject_on = bool(cfg.eject_spool_dir)
@@ -599,6 +616,9 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     if display_path.endswith(sep) and stripped and not stripped.endswith(":"):
         display_path = stripped
 
+    mounted_only = bool(spec.get("mounted_only", spec.get("ejectable")))
+    base_dev = _st_dev(target) if (mounted_only and target == base) else None
+
     entries: list[dict[str, Any]] = []
     truncated = False
     with os.scandir(target) as it:
@@ -610,6 +630,8 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
                 size = 0 if is_dir else entry.stat().st_size
             except OSError:
                 continue
+            if base_dev is not None and is_dir and _st_dev(entry.path) == base_dev:
+                continue  # same filesystem as the root -> no drive mounted here
             entries.append({"name": entry.name, "dir": is_dir, "size": size})
             if len(entries) >= MAX_BROWSE_ENTRIES:
                 truncated = True

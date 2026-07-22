@@ -61,12 +61,17 @@ browse_roots:
   3dData:
     path: /mnt/3dData
     display: \\192.168.35.25\3dData
-  # The card reader, mounted read-only (see docker-compose.yml). `ejectable`
-  # adds an Eject button per device in the web picker; it needs eject_spool_dir
-  # below AND the host-side watcher running (scripts/nas_eject_watcher.py).
+  # The card reader, mounted read-only (see docker-compose.yml).
+  # `mounted_only` hides top-level device folders with no drive mounted on
+  # them — the host keeps an (empty) mount-point folder for every USB device
+  # it has ever seen, so without it Browse lists stale mounts. `ejectable`
+  # adds an Eject button per device in the web picker (and implies
+  # mounted_only); it needs eject_spool_dir below AND the host-side watcher
+  # running (scripts/nas_eject_watcher.py).
   # ingest:
   #   path: /mnt/ingest
   #   display: /mnt/ingest
+  #   mounted_only: true
   #   ejectable: true
 
 # Media eject: the coordinator container can't unmount the NAS's cards, so it
