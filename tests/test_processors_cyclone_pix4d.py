@@ -29,6 +29,15 @@ if "bad" not in las.name:
     las.with_suffix(".3dr").write_text("classified")
 """
 
+# Stand-in for PIX4D_AUTOMATE.exe --save-close: records the args it was invoked
+# with so the test can assert the processor fired save-and-close correctly.
+FAKE_SAVE_CLOSE = f"""#!{sys.executable}
+import sys, pathlib
+calls = pathlib.Path(__file__).parent / "save_close_calls.txt"
+with open(calls, "a") as fh:
+    fh.write(" ".join(sys.argv[1:]) + "\\n")
+"""
+
 
 @pytest.fixture
 def cyclone_env(tmp_path):
@@ -221,6 +230,43 @@ def test_pix4d_after_exit_completes_when_ortho_appears(pix4d_env, tmp_path):
     threading.Thread(target=write_soon, daemon=True).start()
     proc.after_exit(ctx, cancelled=lambda: False)  # returns once ortho is stable
     assert ortho.is_file()
+
+
+def _drop_ortho_soon(root):
+    """Create a stable ortho shortly, so after_exit's completion wait returns."""
+    def _write():
+        time.sleep(0.3)
+        ortho = root / "Pix4D" / "Job" / "exports" / "Job-orthomosaic.tiff"
+        ortho.parent.mkdir(parents=True, exist_ok=True)
+        ortho.write_bytes(b"T" * 2048)
+    threading.Thread(target=_write, daemon=True).start()
+
+
+def test_pix4d_after_exit_runs_save_close_when_configured(pix4d_env, tmp_path):
+    cfg, root, params = pix4d_env
+    sc = tmp_path / "save_close.py"
+    sc.write_text(FAKE_SAVE_CLOSE)
+    sc.chmod(sc.stat().st_mode | stat.S_IEXEC)
+    cfg.payload_paths["pix4d_save_close"] = str(sc)
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params, max_seconds=60)
+
+    _drop_ortho_soon(root)
+    proc.after_exit(ctx, cancelled=lambda: False)
+
+    calls = (tmp_path / "save_close_calls.txt").read_text()
+    assert "--save-close" in calls and "--unattended" in calls
+    assert "project saved and Pix4Dmatic closed" in ctx.log_path.read_text()
+
+
+def test_pix4d_after_exit_skips_save_close_when_unconfigured(pix4d_env, tmp_path):
+    cfg, root, params = pix4d_env  # fixture configures only pix4d_automate
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params, max_seconds=60)
+
+    _drop_ortho_soon(root)
+    proc.after_exit(ctx, cancelled=lambda: False)  # must not raise
+    assert "save-close payload not configured" in ctx.log_path.read_text()
 
 
 def test_pix4d_after_exit_times_out_without_ortho(pix4d_env, tmp_path):

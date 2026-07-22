@@ -48,18 +48,6 @@ UNATTENDED = False
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")  # matches data_intake.py's Config.IMAGE_EXTENSIONS
 
-# --- end-of-run save/close ----------------------------------------------------
-# The orthomosaic export is Pix4Dmatic's final deliverable. wait_for_processing
-# watches the filesystem for it to appear and stop growing under PROJECT_ROOT
-# rather than trying to read a "processing finished" state out of the fragile,
-# offset-driven UIA tree. This deliberately mirrors the server-side
-# Pix4dMaticProcessor completion check (processors/pix4dmatic.py's
-# DEFAULT_ORTHO_GLOB) so the payload and the agent agree on what "complete" means.
-ORTHO_GLOB = "Pix4[dD]/**/exports/*ortho*.tif*"
-PROCESSING_TIMEOUT_SECONDS = 24 * 3600  # give up waiting after this long
-PROCESSING_POLL_SECONDS = 30            # filesystem poll cadence while waiting
-ORTHO_STABLE_SECONDS = 5               # ortho must hold its size this long to count as done
-
 
 def _count_images(root: str) -> int:
     """Recursively count image files (IMAGE_EXTENSIONS) under root."""
@@ -174,19 +162,11 @@ class Pix4DAutomation:
         10: "fix_camera",
         11: "insert_targets",
         12: "start_processing",
-        13: "wait_for_processing",
-        14: "save_project",
-        15: "close_pix4d",
     }
 
     def __init__(self):
         self.win = None
         self.proc = None
-        # Set False by wait_for_processing() if the run never demonstrably
-        # completed, so close_pix4d() leaves an unfinished run open for
-        # inspection. Defaults True so a step run in isolation (--step 15)
-        # still closes.
-        self._processing_complete = True
 
     def launch(self):
         """Step 1 — Launch PIX4Dmatic if it isn't already running."""
@@ -639,57 +619,31 @@ class Pix4DAutomation:
         """Step 12 - Click the 'Start processing' button """
         self._button_push("Start")
 
-    def _ensure_window(self):
-        """Re-resolve self.win if the handle went stale during the long
-        processing wait. Reuses _find_pix4d_window (the same pywinauto
-        Application/Desktop connect used at launch) so save/close can drive
-        the window even if it was recreated while we waited."""
-        try:
-            if self.win is not None and self.win.exists():
-                return
-        except Exception:
-            pass
-        _logger.info("Re-resolving PIX4Dmatic window after processing wait...")
-        self.win = _find_pix4d_window(timeout=30)
+    # --- end-of-run save + close (run via --save-close, not as a numbered step) ---
+    #
+    # These are a SEPARATE phase from the numbered import/processing steps above.
+    # AutomatePix4D can't tell when Pix4Dmatic has finished processing — after
+    # start_processing() the payload exits and Pix4D keeps working on its own.
+    # The agent (processors/pix4dmatic.py) is what watches for completion (the
+    # orthomosaic export landing on disk); once it sees that, it re-invokes this
+    # exe with --save-close, which reuses the same window-focus + pywinauto
+    # connect the import flow uses to save the project and shut Pix4D down.
 
-    def wait_for_processing(self):
-        """Step 13 - Block until Pix4Dmatic finishes processing.
+    def connect(self):
+        """Attach to an already-running PIX4Dmatic without launching a new one.
+        Used by --save-close: processing is already done, so there is always a
+        live instance to save — if there isn't, there is nothing to do and
+        _find_pix4d_window raises."""
+        self.win = _find_pix4d_window(timeout=10)
+        _logger.info("Connected to running PIX4Dmatic.")
 
-        Watches PROJECT_ROOT for the orthomosaic export (Pix4Dmatic's final
-        deliverable) to appear and hold its size for ORTHO_STABLE_SECONDS,
-        rather than reading a 'done' state out of the offset-driven UIA tree.
-        Sets self._processing_complete so close_pix4d() knows whether it's
-        safe to shut the app down; on timeout it stays open for inspection."""
-        root = Path(PROJECT_ROOT)
-        deadline = time.time() + PROCESSING_TIMEOUT_SECONDS
-        _logger.info(
-            f"Waiting for processing to finish — watching for ortho matching "
-            f"'{ORTHO_GLOB}' under {root} (timeout "
-            f"{PROCESSING_TIMEOUT_SECONDS / 3600:.1f}h)."
-        )
-        while time.time() < deadline:
-            orthos = [p for p in root.glob(ORTHO_GLOB) if p.is_file()]
-            if orthos:
-                newest = max(orthos, key=lambda p: p.stat().st_mtime)
-                size1 = newest.stat().st_size
-                time.sleep(ORTHO_STABLE_SECONDS)
-                if size1 > 0 and newest.stat().st_size == size1:
-                    _logger.info(
-                        f"Processing complete — ortho ready: {newest} ({size1} bytes)."
-                    )
-                    self._processing_complete = True
-                    return True
-                _logger.info(
-                    f"Ortho '{newest.name}' still being written ({size1} bytes) — waiting..."
-                )
-            time.sleep(PROCESSING_POLL_SECONDS)
-        _logger.warning(
-            f"Processing did not complete within "
-            f"{PROCESSING_TIMEOUT_SECONDS / 3600:.1f}h (no stable ortho matching "
-            f"'{ORTHO_GLOB}' under {root})."
-        )
-        self._processing_complete = False
-        return False
+    def save_and_close(self):
+        """--save-close entry point: focus the window, save the project, then
+        close the app. Focus + connect are the 'core' bits reused from the
+        import flow (bring_to_front / _find_pix4d_window)."""
+        self.bring_to_front()
+        self.save_project()
+        self.close_pix4d()
 
     def _confirm_save_dialog(self, timeout: int = 3):
         """Best-effort: if a save prompt appeared (either a 'Save changes
@@ -709,10 +663,9 @@ class Pix4DAutomation:
                 continue
 
     def save_project(self):
-        """Step 14 - Save the project. Prefer a real 'Save' button in the UIA
-        tree; if it isn't present, fall back to the Ctrl+S hotkey. Either way,
-        confirm any save/overwrite dialog that pops up so work isn't lost."""
-        self._ensure_window()
+        """Save the project. Prefer a real 'Save' button in the UIA tree; if it
+        isn't present, fall back to the Ctrl+S hotkey. Either way, confirm any
+        save/overwrite dialog that pops up so work isn't lost."""
         self.bring_to_front()
         time.sleep(0.5)
         save_btn = self.win.child_window(title="Save", control_type="Button")
@@ -727,18 +680,9 @@ class Pix4DAutomation:
         _logger.info("Project saved.")
 
     def close_pix4d(self):
-        """Step 15 - Close PIX4Dmatic once processing is finished. Posts
-        WM_CLOSE to the main window for a clean shutdown, then confirms any
-        'save changes?' prompt. Skipped with a warning if wait_for_processing
-        determined the run never completed, so a failed/partial run is left
-        open for a human to inspect."""
-        if not self._processing_complete:
-            _logger.warning(
-                "Processing did not complete — leaving PIX4Dmatic open for inspection."
-            )
-            return
-        self._ensure_window()
-        self.bring_to_front()
+        """Close PIX4Dmatic. Posts WM_CLOSE to the main window for a clean
+        shutdown, then confirms any 'save changes?' prompt so nothing is lost.
+        Only called after the agent has confirmed processing is complete."""
         hwnd = self.win.handle
         WM_CLOSE = 0x0010
         _logger.info(f"Closing PIX4Dmatic (HWND {hwnd})...")
@@ -812,26 +756,37 @@ def main():
                         help="dev mode: 'q' kill switch, missing args fall back to _DEV_DEFAULTS")
     parser.add_argument("--step",         default=None,
                         help="comma-separated step numbers to run in isolation (also uses _DEV_DEFAULTS)")
+    parser.add_argument("--save-close",   action="store_true",
+                        help="save the open project and close PIX4Dmatic, then exit "
+                             "(no import/processing; the agent runs this once it detects "
+                             "processing is complete). Requires no project arguments.")
     args = parser.parse_args()
 
     UNATTENDED = args.unattended
     if args.exe_path:
         PIX4D_EXE = args.exe_path
 
-    values = {
-        "project_name": args.project_name,
-        "project_root": args.project_root,
-        "epsg_h":       args.epsg_h,
-        "epsg_v":       args.epsg_v,
-        "tat_path":     args.tat_path,
-    }
-    if args.dev or args.step:
-        values = {k: (v if v is not None else _DEV_DEFAULTS[k]) for k, v in values.items()}
-    missing = [f"--{k.replace('_', '-')}" for k, v in values.items() if v is None]
-    if missing:
-        raise SystemExit(
-            f"Missing required arguments: {', '.join(missing)} (or pass --dev to use _DEV_DEFAULTS)"
-        )
+    # --save-close is a standalone phase run against an already-open project, so
+    # it needs none of the project arguments the import flow does.
+    if not args.save_close:
+        values = {
+            "project_name": args.project_name,
+            "project_root": args.project_root,
+            "epsg_h":       args.epsg_h,
+            "epsg_v":       args.epsg_v,
+            "tat_path":     args.tat_path,
+        }
+        if args.dev or args.step:
+            values = {k: (v if v is not None else _DEV_DEFAULTS[k]) for k, v in values.items()}
+        missing = [f"--{k.replace('_', '-')}" for k, v in values.items() if v is None]
+        if missing:
+            raise SystemExit(
+                f"Missing required arguments: {', '.join(missing)} (or pass --dev to use _DEV_DEFAULTS)"
+            )
+    else:
+        values = {k: (getattr(args, k) or "") for k in
+                  ("project_name", "project_root", "epsg_h", "epsg_v")}
+        values["tat_path"] = args.tat_path or ""
 
     PROJECT_NAME = values["project_name"]
     PROJECT_ROOT = values["project_root"]
@@ -861,6 +816,16 @@ def main():
     if args.dev:
         _logger.info("Dev mode enabled — press 'q' at any time to quit.")
         threading.Thread(target=_watch_for_quit, args=(automation,), daemon=True).start()
+
+    if args.save_close:
+        # Save-and-close phase: attach to the already-running instance (never
+        # launch a fresh one) and save + close. No DPI check — this uses the
+        # window handle, the Ctrl+S hotkey and a by-title Save button, none of
+        # which depend on the 150% offset calibration the import clicks need.
+        _logger.info("Running --save-close: saving project and closing PIX4Dmatic.")
+        automation.connect()
+        automation.save_and_close()
+        return
 
     _check_dpi_150()
     automation.launch()

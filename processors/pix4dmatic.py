@@ -26,22 +26,28 @@ stages the run onto local disk:
 
 Without scratch_dir the run happens in place on the NAS, unchanged.
 
-AutomatePix4D.py now runs on-machine save-project + close-app steps at the end
-(wait_for_processing → save_project → close_pix4d), so the payload itself blocks
-until the ortho export lands and after_exit's first poll typically passes
-immediately. after_exit still re-verifies completion independently (the two use
-the same ortho glob) so a payload that exits early is still caught here.
+Save + close: the import payload exits right after clicking Start and can't tell
+when Pix4Dmatic has finished — after_exit is what detects completion (the ortho
+export landing). So once the run looks complete, after_exit runs the
+save-and-close payload (AutomatePix4D --save-close, resolved from
+payload_paths.pix4d_save_close) to save the project and close the app before
+results are staged back and the machine is freed. It's best-effort: a save/close
+hiccup is logged but doesn't fail the job (the ortho already exists), and the
+whole step is skipped when that payload key isn't configured.
 
 Job parameters: project_name, project_root (the date folder), epsg_h, epsg_v,
 tat_path (the targets/TAT csv, used as-is).
 Optional: ortho_glob, ortho_min_mb (default 10), completion_poll_seconds (30),
 completion_log_glob, completion_pattern, failure_pattern.
+Agent config (optional): payload_paths.pix4d_save_close enables the on-machine
+save + close of Pix4Dmatic when a run completes.
 """
 from __future__ import annotations
 
 import os
 import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -56,6 +62,12 @@ from processors.util import (
 )
 
 PAYLOAD_KEY = "pix4d_automate"
+# Save-and-close payload, run once the ortho export proves the run is complete
+# (AutomatePix4D --save-close). Normally the same PIX4D_AUTOMATE.exe; kept a
+# separate payload_paths key so the step is opt-in per machine and stays off
+# where it isn't configured. See automation/AutomatePix4D.py save_and_close().
+SAVE_CLOSE_KEY = "pix4d_save_close"
+SAVE_CLOSE_TIMEOUT_SECONDS = 300
 # Pix4Dmatic exports to <project_root>/Pix4D/<project>/exports/<name>-orthomosaic.tiff
 # (AutomatePix4D sets the project Path to <project_root>/Pix4D). Require the
 # exports folder (the final deliverable, not an intermediate ortho), accept
@@ -181,6 +193,63 @@ class Pix4dMaticProcessor(Processor):
                 except OSError as exc:
                     raise ProcessorError(f"copy failed {entry} -> {nas / entry.name}: {exc}")
 
+    # --- on-machine save + close ----------------------------------------------
+
+    @staticmethod
+    def _note(ctx: JobContext, msg: str) -> None:
+        """Append an informational line to the job log — after_exit has no
+        progress channel of its own, and these save/close notes are worth
+        keeping next to the payload output an operator reads."""
+        try:
+            with open(ctx.log_path, "a", encoding="utf-8") as fh:
+                fh.write(f"[pix4dmatic] {msg}\n")
+        except OSError:
+            pass
+
+    def _save_and_close(self, ctx: JobContext, cancelled) -> None:
+        """Save the Pix4D project and close the app on this machine now that the
+        run is complete. Runs the save-close payload (AutomatePix4D --save-close)
+        resolved from payload_paths.<SAVE_CLOSE_KEY> — normally the same
+        PIX4D_AUTOMATE.exe. No-op (logged) when that payload isn't configured.
+        Best-effort: a timeout or non-zero exit is logged but does NOT fail the
+        job, since the orthomosaic deliverable already exists on disk."""
+        if cancelled():
+            return
+        exe = payload_exe(self.cfg, SAVE_CLOSE_KEY)
+        if exe is None or not exe.is_file():
+            self._note(ctx, f"save-close payload not configured "
+                            f"(payload_paths.{SAVE_CLOSE_KEY}) — leaving Pix4Dmatic open.")
+            return
+
+        from agent.runner import NO_WINDOW, kill_tree  # local import avoids a cycle
+        cmd = [str(exe), "--save-close", "--unattended",
+               "--log-file", str(ctx.work_dir / "save_close.log")]
+        self._note(ctx, "run complete — saving project and closing Pix4Dmatic")
+        deadline = time.time() + SAVE_CLOSE_TIMEOUT_SECONDS
+        outcome = "ok"
+        with open(ctx.log_path, "ab") as log_file:
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+            while proc.poll() is None:
+                if cancelled():
+                    kill_tree(proc.pid)
+                    outcome = "cancelled"
+                    break
+                if time.time() > deadline:
+                    kill_tree(proc.pid)
+                    outcome = "timeout"
+                    break
+                time.sleep(1)
+        if outcome == "cancelled":
+            return
+        if outcome == "timeout":
+            self._note(ctx, "save-close payload timed out; Pix4Dmatic may still be open.")
+        elif proc.returncode not in (0, None):
+            self._note(ctx, f"save-close payload exited {proc.returncode}; "
+                            "Pix4Dmatic may still be open.")
+        else:
+            self._note(ctx, "project saved and Pix4Dmatic closed.")
+
     # --- hooks -----------------------------------------------------------------
 
     def preflight(self, ctx: JobContext) -> list[str]:
@@ -269,6 +338,12 @@ class Pix4dMaticProcessor(Processor):
                     f"({ctx.max_runtime_seconds / 3600:.1f} h): no fresh orthomosaic "
                     f"matching '{ctx.parameters.get('ortho_glob', DEFAULT_ORTHO_GLOB)}'")
             time.sleep(poll_seconds)
+
+        # Run is complete: save the project and close Pix4Dmatic on this machine
+        # before results are staged back / the box is freed. Done here (not in
+        # the payload) because the import payload has long since exited — this
+        # processor is what knows the run finished.
+        self._save_and_close(ctx, cancelled)
 
         scratch = self._scratch_root(ctx)
         if scratch is None:

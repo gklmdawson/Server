@@ -40,6 +40,10 @@ payload_paths:
   dji_automate_ui: Z:/Survey/UT/_Scripts/Automate UI/dist/DJI_AUTOMATE_UI.exe
   # PIX4D-01
   pix4d_automate: Z:/Survey/UT/_Scripts/Automate UI/dist/PIX4D_AUTOMATE.exe
+  # Optional: when a run completes, the agent saves the project and closes
+  # Pix4Dmatic by running this payload (PIX4D_AUTOMATE.exe --save-close — the
+  # same exe). Omit to leave Pix4Dmatic open after each run.
+  pix4d_save_close: Z:/Survey/UT/_Scripts/Automate UI/dist/PIX4D_AUTOMATE.exe
   # CYCLONE-01
   cyclone_3dr_exe: C:/Program Files/Leica Geosystems/Cyclone 3DR/3DR.exe
   cyclone_classify_script: Z:/Survey/UT/_Scripts/3DR/LAZ-Classify/ClassifyLAZ.js
