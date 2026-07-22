@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 
 // Path fields with a server-side file explorer behind them. The browser can
 // never see WHERE a locally dropped file lives (only its name/bytes), so
@@ -96,9 +96,11 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const [reloadKey, setReloadKey] = useState(0);
   const [ejecting, setEjecting] = useState("");   // device name in flight
   const [ejectMsg, setEjectMsg] = useState(null); // {ok, text}
+  const [restarting, setRestarting] = useState(false);
   const dialogRef = useRef(null);
 
   const rootIsEjectable = !!roots.find((r) => r.label === rootLabel)?.ejectable;
+  const rootIsRestartable = !!roots.find((r) => r.label === rootLabel)?.restartable;
 
   useEffect(() => {
     dialogRef.current?.showModal();
@@ -131,6 +133,49 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
     } finally {
       setEjecting("");
     }
+  };
+
+  // The card reader's mounts only propagate into the containers live when the
+  // kernel cooperates; when a plugged-in card doesn't show up, restarting the
+  // containers re-reads the mount tree. The server dies mid-restart, so:
+  // fire the request, wait for it to actually go down, poll /health until it
+  // is back, then reload the listing.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const restartContainers = async () => {
+    if (!window.confirm(
+      "Restart the NAS containers to re-scan cards?\n" +
+      "The server goes away for ~10–20 seconds; running NAS copies are blocked."))
+      return;
+    setRestarting(true);
+    setEjectMsg(null);
+    try {
+      await api.restartContainers();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        // A real refusal (no watcher, copy running, bad token) — nothing restarted.
+        setEjectMsg({ ok: false, text: err.message });
+        setRestarting(false);
+        return;
+      }
+      // Network drop: the restart beat our response out the door. Keep waiting.
+    }
+    await sleep(5000);
+    const deadline = Date.now() + 90000;
+    let back = false;
+    while (Date.now() < deadline) {
+      try {
+        await api.health();
+        back = true;
+        break;
+      } catch {
+        await sleep(2000);
+      }
+    }
+    setEjectMsg(back
+      ? { ok: true, text: "Containers restarted — card list refreshed." }
+      : { ok: false, text: "The server hasn't come back yet — give it a moment and reopen Browse." });
+    setRestarting(false);
+    if (back) setReloadKey((k) => k + 1);
   };
 
   const enter = (name) => setPath(path ? `${path}/${name}` : name);
@@ -210,6 +255,19 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               {part}
             </button>
           ))}
+          {rootIsRestartable && (
+            <span style={{ flex: 1, textAlign: "right" }}>
+              <button
+                type="button"
+                className="btn small"
+                title="Restart the NAS containers so a freshly plugged card shows up"
+                disabled={restarting || !!ejecting}
+                onClick={restartContainers}
+              >
+                {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
+              </button>
+            </span>
+          )}
         </div>
       )}
 
@@ -279,7 +337,11 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
             </div>
           ))}
         {listing && visible.length === 0 && listing.parent === null && (
-          <div className="empty">Nothing here.</div>
+          <div className="empty">
+            {rootIsRestartable
+              ? "No card mounted. Plug one in — if it still doesn't show, use ⟳ Rescan cards."
+              : "Nothing here."}
+          </div>
         )}
         {listing?.truncated && (
           <div className="banner error">Folder too large — showing the first entries only.</div>

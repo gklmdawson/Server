@@ -96,6 +96,8 @@ export const api = {
     ),
   eject: (root, device) =>
     request("/api/v1/intake/eject", { method: "POST", body: { root, device } }),
+  restartContainers: () => request("/api/v1/intake/restart", { method: "POST" }),
+  health: () => request("/api/v1/health"),
   uploadIntakeFile: (file) => upload("/api/v1/intake/upload", file),
   parseEcefFile: (file) => upload("/api/v1/intake/parse-ecef", file),
   targetsSummary: (storedPath) =>

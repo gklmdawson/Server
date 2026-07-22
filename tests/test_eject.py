@@ -144,3 +144,99 @@ def test_eject_blocked_by_active_job(eject_client):
     r = eject_client.post("/api/v1/intake/eject", json={"root": "ingest", "device": "sda1"})
     assert r.status_code == 409
     assert job["job_uuid"][:8] in r.json()["detail"]
+
+
+# --- container restart (same spool, action=restart) -------------------------
+
+def test_restart_request_round_trip(tmp_path):
+    spool = str(tmp_path / "eject")
+    req_id = eject_mod.write_restart_request(spool)
+    req = json.loads((Path(spool) / "requests" / f"{req_id}.json").read_text())
+    assert req["action"] == "restart" and "device" not in req
+    # Eject requests now name their action too (watcher back-compat: absent
+    # action means eject).
+    eject_id = eject_mod.write_request(spool, "sda1")
+    eject_req = json.loads(
+        (Path(spool) / "requests" / f"{eject_id}.json").read_text())
+    assert eject_req["action"] == "eject" and eject_req["device"] == "sda1"
+
+
+def test_restart_endpoint_success(eject_client, tmp_path):
+    spool = tmp_path / "spool"
+    t = threading.Thread(target=_answer_next_request,
+                         args=(spool, True, "Restarting the data-intake containers…"))
+    t.start()
+    r = eject_client.post("/api/v1/intake/restart")
+    t.join()
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert "Restarting" in r.json()["message"]
+
+
+def test_restart_refused_by_watcher(eject_client, tmp_path):
+    # Watcher without --restart-cmd answers ok=False.
+    spool = tmp_path / "spool"
+    t = threading.Thread(target=_answer_next_request,
+                         args=(spool, False, "restart is not enabled on the watcher"))
+    t.start()
+    r = eject_client.post("/api/v1/intake/restart")
+    t.join()
+    assert r.status_code == 409
+    assert "not enabled" in r.json()["detail"]
+
+
+def test_restart_pending_504_when_watcher_silent(tmp_path, card):
+    cfg = make_config(
+        tmp_path,
+        eject_spool_dir=str(tmp_path / "spool"),
+        eject_timeout_seconds=0.3,
+        browse_roots={"ingest": {"path": str(card), "display": "/mnt/ingest",
+                                 "ejectable": True}},
+    )
+    with TestClient(create_app(cfg)) as c:
+        r = c.post("/api/v1/intake/restart")
+    assert r.status_code == 504
+
+
+def test_restart_unconfigured_404(client):
+    assert client.post("/api/v1/intake/restart").status_code == 404
+
+
+def test_restart_blocked_by_active_copy_job(eject_client):
+    # Restarting the NAS containers would kill a copy in flight — refuse.
+    job = eject_client.post("/api/v1/jobs", json={
+        "job_type": "INTAKE_COPY",
+        "parameters": {"source_folders": ["/mnt/ingest/sda1/DCIM"]},
+    }).json()
+    eject_client.post("/api/v1/nodes/NAS-COPY/sync", json={
+        "capabilities": ["INTAKE_COPY"], "accepting_jobs": True})
+    r = eject_client.post("/api/v1/intake/restart")
+    assert r.status_code == 409
+    assert job["job_uuid"][:8] in r.json()["detail"]
+
+
+def test_roots_report_restartable(eject_client, tmp_path, card):
+    # Ejectable root + spool configured -> restartable.
+    roots = eject_client.get("/api/v1/browse").json()["roots"]
+    assert roots[0]["restartable"] is True
+
+    # mounted_only alone (no eject buttons) still gets the Rescan button…
+    cfg = make_config(
+        tmp_path,
+        eject_spool_dir=str(tmp_path / "spool"),
+        browse_roots={"ingest": {"path": str(card), "display": "/mnt/ingest",
+                                 "mounted_only": True}},
+    )
+    with TestClient(create_app(cfg)) as c:
+        root = c.get("/api/v1/browse").json()["roots"][0]
+        assert root["restartable"] is True and root["ejectable"] is False
+
+    # …but without the spool (no watcher) neither button can work.
+    cfg = make_config(
+        tmp_path,
+        browse_roots={"ingest": {"path": str(card), "display": "/mnt/ingest",
+                                 "mounted_only": True, "ejectable": True}},
+    )
+    with TestClient(create_app(cfg)) as c:
+        root = c.get("/api/v1/browse").json()["roots"][0]
+        assert root["restartable"] is False and root["ejectable"] is False

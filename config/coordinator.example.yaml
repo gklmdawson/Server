@@ -74,10 +74,13 @@ browse_roots:
   #   mounted_only: true
   #   ejectable: true
 
-# Media eject: the coordinator container can't unmount the NAS's cards, so it
-# spools eject requests here for the host watcher to act on. Point it at a
-# folder both the container and host see — a subdir of the /data volume works
-# (container: /data/eject; host: <compose dir>/data/eject). Empty = disabled.
+# Host-action spool: the coordinator container can't unmount the NAS's cards
+# or restart its own containers, so it spools those requests here for the host
+# watcher (scripts/nas_eject_watcher.py) to act on. Powers both the Eject
+# buttons and the picker's "Rescan cards" (container restart) button. Point it
+# at a folder both the container and host see — a subdir of the /data volume
+# works (container: /data/eject; host: <compose dir>/data/eject).
+# Empty = both features disabled.
 # eject_spool_dir: /data/eject
 
 # Push alerts via ntfy (https://ntfy.sh). Empty topic = disabled. Subscribe to

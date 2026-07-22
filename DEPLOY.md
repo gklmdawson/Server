@@ -196,14 +196,19 @@ the web form from the flight images.
 To stay on the single-machine model instead, give one Windows agent the
 `INTAKE` capability and skip this section — both paths remain supported.
 
-### 1.7 Eject cards from the web UI (optional)
+### 1.7 Eject cards & restart containers from the web UI (optional)
 
 So crews can safely remove a card without opening the NAS UI, the web
 picker can show an **Eject** button next to each device under the `ingest`
-root. The coordinator container can't `umount` the host's card itself (a
-umount inside the container only affects the container's namespace), so a
-tiny **host-side watcher** does the real unmount; the container just spools
-it a request over the shared `/data` volume.
+root — and a **⟳ Rescan cards** button that restarts the data-intake
+containers for the rare card whose mount never propagates into them. The
+coordinator container can't `umount` the host's card itself (a umount
+inside the container only affects the container's namespace), and it
+certainly can't `docker restart` itself, so a tiny **host-side watcher**
+does the real work; the container just spools it a request over the shared
+`/data` volume. The restart request carries no arguments — what actually
+runs is fixed in the watcher's own `--restart-cmd`, so the container can
+never ask the host to run anything else.
 
 1. **Turn it on in `data/coordinator.yaml`:** mark the ingest root ejectable
    and set the spool dir (as the *container* sees it):
@@ -232,15 +237,21 @@ it a request over the shared `/data` volume.
    ```
 
    The default `ExecStart` uses
-   `--spool /volume1/docker/data-intake/data/eject --usb-base /mnt/@usb`;
+   `--spool /volume1/docker/data-intake/data/eject --usb-base /mnt/@usb
+   --restart-cmd "docker restart data-intake-coordinator data-intake-copy"`;
    match `--spool` to wherever your compose folder's `data/eject` lands on
-   the host, and `--usb-base` to where UGOS mounts cards (Part 1.6).
+   the host, `--usb-base` to where UGOS mounts cards (Part 1.6), and
+   `--restart-cmd` to the containers you actually run (drop the flag to
+   disable web-triggered restarts).
 
 Now in **Submit → Browse → ingest**, each card shows **⏏ Eject**; clicking
 it flushes and unmounts on the NAS and reports "safe to remove". The button
-refuses while an `INTAKE_COPY` job is still reading that card. Nothing here
-changes the container's privileges — the unmount happens entirely in the
-host watcher.
+refuses while an `INTAKE_COPY` job is still reading that card. The **⟳
+Rescan cards** button in the same picker restarts the containers (the web
+page waits out the ~10–20 s gap and reloads the listing itself) and is
+refused while any `INTAKE_COPY` job is running, so a copy can never be
+killed mid-write. Nothing here changes the container's privileges — the
+unmount and the restart both happen entirely in the host watcher.
 
 ---
 
@@ -488,7 +499,7 @@ admin token, edit `.env` and `docker compose up -d`.
 | Job stuck **Queued** | Is some *online* machine's toggle for that job type on (Machines tab)? Are the job's "waiting on" dependencies finished? |
 | Web actions return 401 | Set the admin token via ⚙ — it must match `DATA_INTAKE_ADMIN_TOKEN` in `.env`. |
 | `INTAKE_COPY` fails `source folder not found` | The worker must see that path: on the NAS copy worker it's the `/mnt/ingest` mount (and `path_map` must map the projects-root UNC to `/mnt/3dData`); on a single-machine `INTAKE` agent it's a share/mapping for the processing account. |
-| Card plugged into the NAS but not in Browse | The `ingest` root must be in `browse_roots` (Part 1.6), and the card must be visible inside the container (`sudo docker exec data-intake-coordinator ls /mnt/ingest`). The compose mount uses `rslave` propagation so hot-plugged cards appear live; on older compose files (or if the host mount tree isn't shared) a `sudo docker compose restart` after inserting the card is the fallback. With `mounted_only`/`ejectable` set, a device folder only appears once the host has actually *mounted* the card there — if `ls` inside the container shows files on the card but Browse hides it, the container is seeing a stale copy of the folder, not the mount: restart the container. |
+| Card plugged into the NAS but not in Browse | The `ingest` root must be in `browse_roots` (Part 1.6), and the card must be visible inside the container (`sudo docker exec data-intake-coordinator ls /mnt/ingest`). The compose mount uses `rslave` propagation so hot-plugged cards appear live; on older compose files (or if the host mount tree isn't shared) a `sudo docker compose restart` after inserting the card is the fallback. With `mounted_only`/`ejectable` set, a device folder only appears once the host has actually *mounted* the card there — if `ls` inside the container shows files on the card but Browse hides it, the container is seeing a stale copy of the folder, not the mount: restart the containers (the picker's **⟳ Rescan cards** button does this from the browser when the Part 1.7 watcher is installed). |
 | Eject button says the watcher didn't respond | The host watcher isn't running or points at the wrong spool. `systemctl status data-intake-eject`, and confirm its `--spool` is the host path of the container's `eject_spool_dir` (Part 1.7). |
 | Eject says the card is busy | Something on the NAS still has a file open on it (a copy job, a shell `cd`'d into it, the file manager). Close it and retry. |
 | `git clone` says repository not found | The repo is private — see Part 0 (ZIP download or `gh auth login`). |

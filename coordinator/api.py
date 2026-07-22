@@ -583,10 +583,14 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     roots = cfg.browse_roots or {}
     eject_on = bool(cfg.eject_spool_dir)
     if root is None:
+        # `restartable`: removable-media roots where the Rescan (container
+        # restart) button makes sense — needs the same host watcher as eject.
         return {"roots": [
             {"label": label,
              "display": str(spec.get("display") or spec.get("path", "")),
-             "ejectable": eject_on and bool(spec.get("ejectable"))}
+             "ejectable": eject_on and bool(spec.get("ejectable")),
+             "restartable": eject_on and bool(spec.get("mounted_only")
+                                              or spec.get("ejectable"))}
             for label, spec in roots.items() if spec.get("path")
         ]}
 
@@ -755,6 +759,47 @@ def intake_eject(request: Request, body: EjectRequest,
                             or "the host could not eject the card")
     logger.info("Ejected device %s under root %s", device, body.root)
     return {"ok": True, "device": device, "message": result.message or "Card ejected — safe to remove."}
+
+
+@router.post("/intake/restart")
+def intake_restart(request: Request,
+                   cfg: CoordinatorConfig = Depends(get_cfg),
+                   session: Session = Depends(get_session),
+                   _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Restart the data-intake containers via the host watcher — the fix for a
+    hot-plugged card that never propagated into the container's mount
+    namespace. Uses the same spool as eject; the watcher acknowledges BEFORE
+    running the restart (this process dies with it), so this response reaches
+    the browser and the UI then polls /health until the coordinator is back."""
+    from coordinator import eject as eject_mod
+
+    if not cfg.eject_spool_dir:
+        raise HTTPException(status_code=404,
+                            detail="Container restart is not configured "
+                                   "(set eject_spool_dir and run the host watcher)")
+    # The restart kills the NAS-local copy worker too — never yank a card copy
+    # out from under it. Jobs on the Windows boxes only lose a sync or two.
+    busy = session.execute(
+        select(Job.uuid).where(
+            Job.status.in_(ACTIVE),
+            Job.job_type == "INTAKE_COPY",
+        ).limit(1)
+    ).scalar_one_or_none()
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An INTAKE_COPY job ({busy[:8]}) is running in the NAS "
+                   "container — restarting now would kill the copy. Wait for "
+                   "it to finish (or cancel it) first.")
+
+    result = eject_mod.restart(cfg.eject_spool_dir, cfg.eject_timeout_seconds)
+    if result.pending:
+        raise HTTPException(status_code=504, detail=result.message)
+    if not result.ok:
+        raise HTTPException(status_code=409,
+                            detail=result.message or "the host watcher refused the restart")
+    logger.info("Container restart requested via the web UI")
+    return {"ok": True, "message": result.message or "Restarting containers…"}
 
 
 @router.post("/intake/upload", status_code=201)

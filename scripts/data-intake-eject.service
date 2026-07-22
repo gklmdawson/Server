@@ -1,13 +1,15 @@
-# Host-side media-eject watcher for the Data Intake coordinator.
+# Host-side watcher for the Data Intake coordinator's privileged actions.
 #
-# The coordinator container can't unmount the NAS's cards itself; this service
-# (running on the NAS host as root) does the umount when the web UI's Eject
-# button spools a request. See DEPLOY.md "Media eject".
+# The coordinator container can't unmount the NAS's cards itself, nor restart
+# its own containers; this service (running on the NAS host as root) does the
+# umount when the web UI's Eject button spools a request, and the container
+# restart when the picker's "Rescan cards" button does. See DEPLOY.md
+# "Media eject & container restart".
 #
-# Install (adjust the two paths to your NAS):
+# Install (adjust the paths to your NAS):
 #   sudo cp scripts/nas_eject_watcher.py /usr/local/bin/
 #   sudo cp scripts/data-intake-eject.service /etc/systemd/system/
-#   # edit ExecStart below if your spool / USB base differ, then:
+#   # edit ExecStart below if your spool / USB base / containers differ, then:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now data-intake-eject
 #   systemctl status data-intake-eject
@@ -15,16 +17,22 @@
 # --spool must equal the coordinator's eject_spool_dir as seen ON THE HOST
 # (the host side of the ./data bind mount), e.g.
 # /volume1/docker/data-intake/data/eject.
+#
+# --restart-cmd is what "Rescan cards" runs; drop the line to disable web-
+# triggered restarts, or list only the containers you run (data-intake-copy
+# only exists with the intake-copy compose profile — a partial failure just
+# logs here).
 
 [Unit]
-Description=Data Intake media eject watcher
-After=network.target
+Description=Data Intake host watcher (media eject + container restart)
+After=network.target docker.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /usr/local/bin/nas_eject_watcher.py \
     --spool /volume1/docker/data-intake/data/eject \
-    --usb-base /mnt/@usb
+    --usb-base /mnt/@usb \
+    --restart-cmd "docker restart data-intake-coordinator data-intake-copy"
 Restart=always
 RestartSec=5
 User=root
