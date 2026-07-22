@@ -29,18 +29,21 @@ Without scratch_dir the run happens in place on the NAS, unchanged.
 Save + close: the import payload exits right after clicking Start and can't tell
 when Pix4Dmatic has finished — after_exit is what detects completion (the ortho
 export landing). So once the run looks complete, after_exit runs the
-save-and-close payload (AutomatePix4D --save-close, resolved from
-payload_paths.pix4d_save_close) to save the project and close the app before
-results are staged back and the machine is freed. It's best-effort: a save/close
-hiccup is logged but doesn't fail the job (the ortho already exists), and the
-whole step is skipped when that payload key isn't configured.
+save-and-close payload (AutomatePix4D --save-close) to save the project and close
+the app before results are staged back and the machine is freed. The exe is
+payload_paths.pix4d_save_close if set, else payload_paths.pix4d_automate (the
+same PIX4D_AUTOMATE.exe) — so this needs no extra config on a box that already
+runs the import. It's best-effort and logged step by step: a launch error,
+timeout, or non-zero exit is written to the job log but doesn't fail the job (the
+ortho already exists). To test just this step against a manually-opened project,
+run  PIX4D_AUTOMATE.exe --save-close  (add --no-close to save without closing).
 
 Job parameters: project_name, project_root (the date folder), epsg_h, epsg_v,
 tat_path (the targets/TAT csv, used as-is).
 Optional: ortho_glob, ortho_min_mb (default 10), completion_poll_seconds (30),
 completion_log_glob, completion_pattern, failure_pattern.
-Agent config (optional): payload_paths.pix4d_save_close enables the on-machine
-save + close of Pix4Dmatic when a run completes.
+Agent config (optional): payload_paths.pix4d_save_close overrides which exe runs
+the save + close (defaults to pix4d_automate).
 """
 from __future__ import annotations
 
@@ -206,49 +209,74 @@ class Pix4dMaticProcessor(Processor):
         except OSError:
             pass
 
+    def _save_close_exe(self) -> tuple[Optional[Path], str]:
+        """The exe to run for save+close, and which config key it came from.
+
+        Prefer an explicit payload_paths.pix4d_save_close, but FALL BACK to the
+        import payload payload_paths.pix4d_automate — it's the same
+        PIX4D_AUTOMATE.exe, so save/close works on any box that can run the
+        import without needing a second config key. (The missing-key silent skip
+        is exactly what left Pix4Dmatic open after a completed run.)"""
+        exe = payload_exe(self.cfg, SAVE_CLOSE_KEY)
+        if exe is not None:
+            return exe, SAVE_CLOSE_KEY
+        return payload_exe(self.cfg, PAYLOAD_KEY), PAYLOAD_KEY
+
     def _save_and_close(self, ctx: JobContext, cancelled) -> None:
         """Save the Pix4D project and close the app on this machine now that the
-        run is complete. Runs the save-close payload (AutomatePix4D --save-close)
-        resolved from payload_paths.<SAVE_CLOSE_KEY> — normally the same
-        PIX4D_AUTOMATE.exe. No-op (logged) when that payload isn't configured.
-        Best-effort: a timeout or non-zero exit is logged but does NOT fail the
-        job, since the orthomosaic deliverable already exists on disk."""
+        run is complete. Runs the save-close payload (AutomatePix4D --save-close),
+        preferring payload_paths.pix4d_save_close and falling back to
+        payload_paths.pix4d_automate. Best-effort and heavily logged: a launch
+        error, timeout, or non-zero exit is written to the job log but does NOT
+        fail the job, since the orthomosaic deliverable already exists on disk."""
         if cancelled():
+            self._note(ctx, "save/close SKIPPED: job was cancelled.")
             return
-        exe = payload_exe(self.cfg, SAVE_CLOSE_KEY)
+        exe, key = self._save_close_exe()
         if exe is None or not exe.is_file():
-            self._note(ctx, f"save-close payload not configured "
-                            f"(payload_paths.{SAVE_CLOSE_KEY}) — leaving Pix4Dmatic open.")
+            self._note(ctx, f"save/close SKIPPED: no payload exe found — set "
+                            f"payload_paths.{PAYLOAD_KEY} (or .{SAVE_CLOSE_KEY}). "
+                            f"Pix4Dmatic left open. (resolved: {exe!r})")
             return
 
         from agent.runner import NO_WINDOW, kill_tree  # local import avoids a cycle
-        cmd = [str(exe), "--save-close", "--unattended",
-               "--log-file", str(ctx.work_dir / "save_close.log")]
-        self._note(ctx, "run complete — saving project and closing Pix4Dmatic")
+        save_close_log = ctx.work_dir / "save_close.log"
+        cmd = [str(exe), "--save-close", "--unattended", "--log-file", str(save_close_log)]
+        self._note(ctx, f"save/close START: run complete → {exe.name} --save-close "
+                        f"(payload_paths.{key}); step-by-step detail in {save_close_log}")
         deadline = time.time() + SAVE_CLOSE_TIMEOUT_SECONDS
         outcome = "ok"
-        with open(ctx.log_path, "ab") as log_file:
-            proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
-            while proc.poll() is None:
-                if cancelled():
-                    kill_tree(proc.pid)
-                    outcome = "cancelled"
-                    break
-                if time.time() > deadline:
-                    kill_tree(proc.pid)
-                    outcome = "timeout"
-                    break
-                time.sleep(1)
+        try:
+            with open(ctx.log_path, "ab") as log_file:
+                proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
+                                        stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                self._note(ctx, f"save/close: launched PID {proc.pid}, waiting up to "
+                                f"{SAVE_CLOSE_TIMEOUT_SECONDS}s for it to finish.")
+                while proc.poll() is None:
+                    if cancelled():
+                        kill_tree(proc.pid)
+                        outcome = "cancelled"
+                        break
+                    if time.time() > deadline:
+                        kill_tree(proc.pid)
+                        outcome = "timeout"
+                        break
+                    time.sleep(1)
+        except OSError as exc:
+            self._note(ctx, f"save/close FAILED to launch {exe}: {exc} — "
+                            "Pix4Dmatic left open.")
+            return
         if outcome == "cancelled":
+            self._note(ctx, "save/close cancelled mid-run; Pix4Dmatic may still be open.")
             return
         if outcome == "timeout":
-            self._note(ctx, "save-close payload timed out; Pix4Dmatic may still be open.")
+            self._note(ctx, f"save/close TIMED OUT after {SAVE_CLOSE_TIMEOUT_SECONDS}s; "
+                            f"Pix4Dmatic may still be open. See {save_close_log}.")
         elif proc.returncode not in (0, None):
-            self._note(ctx, f"save-close payload exited {proc.returncode}; "
-                            "Pix4Dmatic may still be open.")
+            self._note(ctx, f"save/close payload EXITED {proc.returncode}; Pix4Dmatic "
+                            f"may still be open. See {save_close_log} for the reason.")
         else:
-            self._note(ctx, "project saved and Pix4Dmatic closed.")
+            self._note(ctx, "save/close DONE: project saved and Pix4Dmatic closed.")
 
     # --- hooks -----------------------------------------------------------------
 

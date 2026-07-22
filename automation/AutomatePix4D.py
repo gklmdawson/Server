@@ -634,16 +634,27 @@ class Pix4DAutomation:
         Used by --save-close: processing is already done, so there is always a
         live instance to save — if there isn't, there is nothing to do and
         _find_pix4d_window raises."""
+        _logger.info("[save-close] connect(): looking for a running PIX4Dmatic window...")
         self.win = _find_pix4d_window(timeout=10)
-        _logger.info("Connected to running PIX4Dmatic.")
+        _logger.info(f"[save-close] connect(): attached to PIX4Dmatic (HWND {self.win.handle}).")
 
-    def save_and_close(self):
+    def save_and_close(self, no_close: bool = False):
         """--save-close entry point: focus the window, save the project, then
-        close the app. Focus + connect are the 'core' bits reused from the
-        import flow (bring_to_front / _find_pix4d_window)."""
+        (unless no_close) close the app. Focus + connect are the 'core' bits
+        reused from the import flow (bring_to_front / _find_pix4d_window).
+        no_close=True (from --no-close) saves but leaves Pix4D open — handy for
+        running the save test repeatedly without reopening the project."""
+        _logger.info("[save-close] ===== SAVE + CLOSE START =====")
         self.bring_to_front()
+        _logger.info("[save-close] window brought to front; saving project...")
         self.save_project()
+        if no_close:
+            _logger.info("[save-close] --no-close set: leaving PIX4Dmatic open (save only).")
+            _logger.info("[save-close] ===== SAVE ONLY DONE =====")
+            return
+        _logger.info("[save-close] closing PIX4Dmatic...")
         self.close_pix4d()
+        _logger.info("[save-close] ===== SAVE + CLOSE DONE =====")
 
     def _confirm_save_dialog(self, timeout: int = 3):
         """Best-effort: if a save prompt appeared (either a 'Save changes
@@ -670,14 +681,14 @@ class Pix4DAutomation:
         time.sleep(0.5)
         save_btn = self.win.child_window(title="Save", control_type="Button")
         if save_btn.exists():
-            _logger.info("'Save' button found — clicking it.")
+            _logger.info("[save-close] save_project(): 'Save' button found in the UIA tree — clicking it.")
             save_btn.click_input()
         else:
-            _logger.info("No 'Save' button in the UIA tree — sending Ctrl+S.")
+            _logger.info("[save-close] save_project(): no 'Save' button in the UIA tree — sending Ctrl+S hotkey.")
             send_keys("^s")
         time.sleep(1)
         self._confirm_save_dialog()
-        _logger.info("Project saved.")
+        _logger.info("[save-close] save_project(): save issued (button or Ctrl+S) and any dialog confirmed.")
 
     def close_pix4d(self):
         """Close PIX4Dmatic. Posts WM_CLOSE to the main window for a clean
@@ -685,7 +696,7 @@ class Pix4DAutomation:
         Only called after the agent has confirmed processing is complete."""
         hwnd = self.win.handle
         WM_CLOSE = 0x0010
-        _logger.info(f"Closing PIX4Dmatic (HWND {hwnd})...")
+        _logger.info(f"[save-close] close_pix4d(): posting WM_CLOSE to PIX4Dmatic (HWND {hwnd})...")
         ctypes.windll.user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
         time.sleep(2)
         # A 'save changes before closing?' prompt may still appear — keep the work.
@@ -694,11 +705,22 @@ class Pix4DAutomation:
         if self.proc is not None:
             try:
                 self.proc.wait(timeout=30)
-                _logger.info("PIX4Dmatic process exited.")
+                _logger.info("[save-close] close_pix4d(): PIX4Dmatic process exited cleanly.")
             except Exception:
-                _logger.info("PIX4Dmatic still shutting down after close request.")
+                _logger.info("[save-close] close_pix4d(): PIX4Dmatic still shutting down after close request.")
         else:
-            _logger.info("PIX4Dmatic close requested.")
+            # Attached to a pre-existing instance (the normal agent case): confirm
+            # the window is actually gone so the log says whether close worked.
+            time.sleep(1)
+            try:
+                gone = not self.win.exists()
+            except Exception:
+                gone = True
+            if gone:
+                _logger.info("[save-close] close_pix4d(): PIX4Dmatic window is gone — close confirmed.")
+            else:
+                _logger.warning("[save-close] close_pix4d(): PIX4Dmatic window still present after WM_CLOSE "
+                                "(a dialog may be blocking, or the title/handle changed).")
 
     # def open_templates(self):
     #     """Step 10 - Click the 'Settings' button (far-left edge of the screen,
@@ -759,7 +781,12 @@ def main():
     parser.add_argument("--save-close",   action="store_true",
                         help="save the open project and close PIX4Dmatic, then exit "
                              "(no import/processing; the agent runs this once it detects "
-                             "processing is complete). Requires no project arguments.")
+                             "processing is complete). Requires no project arguments. "
+                             "TEST IT standalone: open Pix4D on a finished project and run "
+                             "AutomatePix4D.py --save-close.")
+    parser.add_argument("--no-close",     action="store_true",
+                        help="with --save-close: save the project but DON'T close "
+                             "Pix4D — lets you re-run the save test without reopening it.")
     args = parser.parse_args()
 
     UNATTENDED = args.unattended
@@ -822,9 +849,16 @@ def main():
         # launch a fresh one) and save + close. No DPI check — this uses the
         # window handle, the Ctrl+S hotkey and a by-title Save button, none of
         # which depend on the 150% offset calibration the import clicks need.
-        _logger.info("Running --save-close: saving project and closing PIX4Dmatic.")
-        automation.connect()
-        automation.save_and_close()
+        _logger.info(f"Running --save-close (no_close={args.no_close}): "
+                     "saving the open PIX4Dmatic project"
+                     f"{' (leaving it open)' if args.no_close else ' and closing it'}.")
+        try:
+            automation.connect()
+            automation.save_and_close(no_close=args.no_close)
+            _logger.info("[save-close] finished OK.")
+        except Exception:
+            _logger.exception("[save-close] FAILED — see traceback above.")
+            raise
         return
 
     _check_dpi_150()

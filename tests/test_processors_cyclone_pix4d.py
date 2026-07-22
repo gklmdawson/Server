@@ -242,12 +242,16 @@ def _drop_ortho_soon(root):
     threading.Thread(target=_write, daemon=True).start()
 
 
-def test_pix4d_after_exit_runs_save_close_when_configured(pix4d_env, tmp_path):
-    cfg, root, params = pix4d_env
+def _fake_save_close_exe(tmp_path):
     sc = tmp_path / "save_close.py"
     sc.write_text(FAKE_SAVE_CLOSE)
     sc.chmod(sc.stat().st_mode | stat.S_IEXEC)
-    cfg.payload_paths["pix4d_save_close"] = str(sc)
+    return sc
+
+
+def test_pix4d_after_exit_runs_save_close_when_configured(pix4d_env, tmp_path):
+    cfg, root, params = pix4d_env
+    cfg.payload_paths["pix4d_save_close"] = str(_fake_save_close_exe(tmp_path))
     proc = Pix4dMaticProcessor(cfg)
     ctx = _ctx(tmp_path, params, max_seconds=60)
 
@@ -259,14 +263,31 @@ def test_pix4d_after_exit_runs_save_close_when_configured(pix4d_env, tmp_path):
     assert "project saved and Pix4Dmatic closed" in ctx.log_path.read_text()
 
 
-def test_pix4d_after_exit_skips_save_close_when_unconfigured(pix4d_env, tmp_path):
-    cfg, root, params = pix4d_env  # fixture configures only pix4d_automate
+def test_pix4d_after_exit_falls_back_to_import_payload(pix4d_env, tmp_path):
+    """Regression: with no dedicated pix4d_save_close key, save/close must still
+    run — falling back to the pix4d_automate exe (the same PIX4D_AUTOMATE.exe)."""
+    cfg, root, params = pix4d_env  # fixture sets only pix4d_automate
+    cfg.payload_paths["pix4d_automate"] = str(_fake_save_close_exe(tmp_path))
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params, max_seconds=60)
+
+    _drop_ortho_soon(root)
+    proc.after_exit(ctx, cancelled=lambda: False)
+
+    calls = (tmp_path / "save_close_calls.txt").read_text()
+    assert "--save-close" in calls, "save/close must fall back to the import payload"
+    assert "project saved and Pix4Dmatic closed" in ctx.log_path.read_text()
+
+
+def test_pix4d_after_exit_skips_save_close_when_no_payload(pix4d_env, tmp_path):
+    cfg, root, params = pix4d_env
+    cfg.payload_paths = {}  # neither pix4d_save_close nor pix4d_automate configured
     proc = Pix4dMaticProcessor(cfg)
     ctx = _ctx(tmp_path, params, max_seconds=60)
 
     _drop_ortho_soon(root)
     proc.after_exit(ctx, cancelled=lambda: False)  # must not raise
-    assert "save-close payload not configured" in ctx.log_path.read_text()
+    assert "save/close SKIPPED: no payload exe" in ctx.log_path.read_text()
 
 
 def test_pix4d_stages_images_local_and_deletes_scratch(pix4d_env, tmp_path):
