@@ -246,9 +246,11 @@ never ask the host to run anything else.
 
 Now in **Submit → Browse → ingest**, each card shows **⏏ Eject**; clicking
 it flushes and unmounts on the NAS and reports "safe to remove". The button
-refuses while an `INTAKE_COPY` job is still reading that card. The **⟳
-Rescan cards** button in the same picker restarts the containers (the web
-page waits out the ~10–20 s gap and reloads the listing itself) and is
+refuses while an `INTAKE_COPY` job is still reading that card. The restart
+lives in two places: **⟳ Rescan cards** right in the picker's empty state
+(the moment a plugged-in card isn't showing), and **⟳ Restart intake
+containers** on the **Machines** tab (the permanent, discoverable home).
+Both wait out the ~10–20 s gap and refresh themselves, and both are
 refused while any `INTAKE_COPY` job is running, so a copy can never be
 killed mid-write. Nothing here changes the container's privileges — the
 unmount and the restart both happen entirely in the host watcher.

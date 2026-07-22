@@ -907,6 +907,14 @@ dialog.picker footer {
   margin-left: 6px;
 }
 
+/* Picker empty state on a media root: message + inline Rescan button. */
+.empty-rescan {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 14px 0;
+}
+
 @media (max-width: 720px) {
   .row,
   .row3 {

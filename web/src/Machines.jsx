@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import { useContainerRestart } from "./useContainerRestart.js";
 import { usePoll } from "./usePoll.js";
 import { ErrorBanner, OnlineChip, timeAgo } from "./ui.jsx";
 
@@ -170,6 +171,42 @@ function MachineCard({ node, refresh, setError }) {
   );
 }
 
+// The canonical home for the container restart (the picker's Rescan button is
+// the in-context shortcut). Rendered only when a browse root reports
+// `restartable` — i.e. the eject spool + host watcher are configured.
+function NasCard({ refresh }) {
+  const [available, setAvailable] = useState(false);
+  const { restarting, message, restart } = useContainerRestart(refresh);
+
+  useEffect(() => {
+    api
+      .browseRoots()
+      .then((data) => setAvailable((data.roots || []).some((r) => r.restartable)))
+      .catch(() => setAvailable(false));
+  }, []);
+
+  if (!available) return null;
+
+  return (
+    <section className="card">
+      <h2>NAS containers</h2>
+      <div className="sub" style={{ marginBottom: 8 }}>
+        Restart the coordinator + intake-copy containers on the NAS — the fix
+        when a plugged-in card doesn't appear under Browse. Refused while a
+        NAS copy job is running; the page rides out the ~10–20 s gap itself.
+      </div>
+      {message && (
+        <div className={`banner ${message.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
+          {message.text}
+        </div>
+      )}
+      <button className="btn" disabled={restarting} onClick={restart}>
+        {restarting ? "Restarting… (waiting for the server)" : "⟳ Restart intake containers"}
+      </button>
+    </section>
+  );
+}
+
 export default function Machines() {
   const { data, error, refresh } = usePoll(api.nodes, 5000);
   const [actionError, setActionError] = useState(null);
@@ -203,6 +240,7 @@ export default function Machines() {
           </div>
         )}
       </section>
+      <NasCard refresh={refresh} />
     </>
   );
 }

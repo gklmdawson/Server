@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "./api.js";
+import { api } from "./api.js";
+import { useContainerRestart } from "./useContainerRestart.js";
 
 // Path fields with a server-side file explorer behind them. The browser can
 // never see WHERE a locally dropped file lives (only its name/bytes), so
@@ -96,8 +97,12 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const [reloadKey, setReloadKey] = useState(0);
   const [ejecting, setEjecting] = useState("");   // device name in flight
   const [ejectMsg, setEjectMsg] = useState(null); // {ok, text}
-  const [restarting, setRestarting] = useState(false);
   const dialogRef = useRef(null);
+  const {
+    restarting,
+    message: restartMsg,
+    restart,
+  } = useContainerRestart(() => setReloadKey((k) => k + 1));
 
   const rootIsEjectable = !!roots.find((r) => r.label === rootLabel)?.ejectable;
   const rootIsRestartable = !!roots.find((r) => r.label === rootLabel)?.restartable;
@@ -135,49 +140,6 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
     }
   };
 
-  // The card reader's mounts only propagate into the containers live when the
-  // kernel cooperates; when a plugged-in card doesn't show up, restarting the
-  // containers re-reads the mount tree. The server dies mid-restart, so:
-  // fire the request, wait for it to actually go down, poll /health until it
-  // is back, then reload the listing.
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const restartContainers = async () => {
-    if (!window.confirm(
-      "Restart the NAS containers to re-scan cards?\n" +
-      "The server goes away for ~10–20 seconds; running NAS copies are blocked."))
-      return;
-    setRestarting(true);
-    setEjectMsg(null);
-    try {
-      await api.restartContainers();
-    } catch (err) {
-      if (err instanceof ApiError) {
-        // A real refusal (no watcher, copy running, bad token) — nothing restarted.
-        setEjectMsg({ ok: false, text: err.message });
-        setRestarting(false);
-        return;
-      }
-      // Network drop: the restart beat our response out the door. Keep waiting.
-    }
-    await sleep(5000);
-    const deadline = Date.now() + 90000;
-    let back = false;
-    while (Date.now() < deadline) {
-      try {
-        await api.health();
-        back = true;
-        break;
-      } catch {
-        await sleep(2000);
-      }
-    }
-    setEjectMsg(back
-      ? { ok: true, text: "Containers restarted — card list refreshed." }
-      : { ok: false, text: "The server hasn't come back yet — give it a moment and reopen Browse." });
-    setRestarting(false);
-    if (back) setReloadKey((k) => k + 1);
-  };
-
   const enter = (name) => setPath(path ? `${path}/${name}` : name);
 
   const toggle = (name) => {
@@ -209,6 +171,10 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const visible = (listing?.entries || []).filter(
     (e) => e.dir || (mode === "file" && matchesExt(e.name, exts))
   );
+  // Empty media root: the Rescan button moves into the empty state (the
+  // stuck-user moment); the breadcrumb copy only shows alongside entries
+  // (the "second card isn't appearing" case) so it's never duplicated.
+  const topLevelEmpty = !!listing && visible.length === 0 && listing.parent === null;
 
   return (
     <dialog className="picker" ref={dialogRef} onClose={onClose}>
@@ -255,14 +221,14 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               {part}
             </button>
           ))}
-          {rootIsRestartable && (
+          {rootIsRestartable && !topLevelEmpty && (
             <span style={{ flex: 1, textAlign: "right" }}>
               <button
                 type="button"
                 className="btn small"
                 title="Restart the NAS containers so a freshly plugged card shows up"
                 disabled={restarting || !!ejecting}
-                onClick={restartContainers}
+                onClick={restart}
               >
                 {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
               </button>
@@ -274,6 +240,11 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
       {ejectMsg && (
         <div className={`banner ${ejectMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
           {ejectMsg.text}
+        </div>
+      )}
+      {restartMsg && (
+        <div className={`banner ${restartMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
+          {restartMsg.text}
         </div>
       )}
 
@@ -336,11 +307,23 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               )}
             </div>
           ))}
-        {listing && visible.length === 0 && listing.parent === null && (
+        {topLevelEmpty && (
           <div className="empty">
-            {rootIsRestartable
-              ? "No card mounted. Plug one in — if it still doesn't show, use ⟳ Rescan cards."
-              : "Nothing here."}
+            {rootIsRestartable ? (
+              <div className="empty-rescan">
+                <div>No card mounted. Plug the card into the NAS — if it still doesn't show:</div>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={restarting || !!ejecting}
+                  onClick={restart}
+                >
+                  {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
+                </button>
+              </div>
+            ) : (
+              "Nothing here."
+            )}
           </div>
         )}
         {listing?.truncated && (
