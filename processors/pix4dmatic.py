@@ -273,6 +273,9 @@ class Pix4dMaticProcessor(Processor):
         no scratch_dir is configured."""
         scratch = self._scratch_root(ctx)
         if scratch is None:
+            self._note(ctx, "no scratch_dir configured — Pix4Dmatic will read images "
+                            "directly from the NAS (images are NOT staged to a local "
+                            "drive). Set scratch_dir to process off local disk.")
             return
         nas = self._nas_root(ctx)
         ppk_src = nas / PPK_DIR
@@ -280,6 +283,8 @@ class Pix4dMaticProcessor(Processor):
             raise ProcessorError(f"PPK folder not found to stage: {ppk_src}")
         scratch.mkdir(parents=True, exist_ok=True)
         self._copy_tree(ppk_src, scratch / PPK_DIR, cancelled)
+        self._note(ctx, f"staged PPK images to local scratch for processing: "
+                        f"{scratch / PPK_DIR} (originals stay on the NAS at {ppk_src})")
         # AutomatePix4D types <project_root>/Pix4D into the project Path field and
         # relies on that folder existing (intake makes it on the NAS); create it
         # on the scratch root too so the run behaves the same.
@@ -358,7 +363,16 @@ class Pix4dMaticProcessor(Processor):
                 "Pix4D outputs were copied to the NAS but no orthomosaic matching "
                 f"'{ctx.parameters.get('ortho_glob', DEFAULT_ORTHO_GLOB)}' is present "
                 f"under {nas} — leaving scratch copy at {scratch}")
+        # Delete the local copy (staged images + working files). Pix4Dmatic was
+        # closed above, so its file locks are released and the removal should
+        # succeed; verify it and surface a warning if anything remains, rather
+        # than silently leaving images on the local drive.
         shutil.rmtree(scratch, ignore_errors=True)
+        if scratch.exists():
+            self._note(ctx, f"WARNING: local scratch copy not fully removed: {scratch} "
+                            "— staged images may still be on the local drive.")
+        else:
+            self._note(ctx, f"removed local scratch copy (staged images deleted): {scratch}")
 
     def validate_outputs(self, ctx: JobContext) -> Validation:
         # Validate the final home (the NAS). When staging, after_exit has already

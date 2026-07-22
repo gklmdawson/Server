@@ -269,6 +269,40 @@ def test_pix4d_after_exit_skips_save_close_when_unconfigured(pix4d_env, tmp_path
     assert "save-close payload not configured" in ctx.log_path.read_text()
 
 
+def test_pix4d_stages_images_local_and_deletes_scratch(pix4d_env, tmp_path):
+    """With scratch_dir set, images are copied to the local drive, Pix4D is
+    pointed at that local copy (not the NAS), and the local copy — including the
+    staged images — is deleted once processing completes."""
+    cfg, root, params = pix4d_env
+    cfg.scratch_dir = str(tmp_path / "scratch")
+    (root / "PPK" / "img_0001.jpg").write_bytes(b"image-bytes")  # an image on the NAS
+    proc = Pix4dMaticProcessor(cfg)
+    ctx = _ctx(tmp_path, params, max_seconds=60)
+
+    # prepare() stages the PPK folder (the images) onto the local scratch drive
+    proc.prepare(ctx, cancelled=lambda: False)
+    scratch = tmp_path / "scratch" / "Job"
+    assert (scratch / "PPK" / "img_0001.jpg").is_file()          # images now local
+    assert (root / "PPK" / "img_0001.jpg").is_file()             # NAS original untouched
+
+    # Pix4D is launched against the local scratch root, not the NAS
+    cmd = proc.build_command(ctx)
+    assert cmd[cmd.index("--project-root") + 1] == str(scratch)
+
+    # simulate Pix4D producing the ortho on the local scratch root, then finish
+    ortho = scratch / "Pix4d" / "Job" / "exports" / "Job-orthomosaic.tiff"
+    ortho.parent.mkdir(parents=True)
+    ortho.write_bytes(b"T" * 2048)
+    proc.after_exit(ctx, cancelled=lambda: False)
+
+    # ortho copied back to the NAS, and the local scratch copy (images) is gone
+    assert (root / "Pix4d" / "Job" / "exports" / "Job-orthomosaic.tiff").is_file()
+    assert not scratch.exists()                                  # local images deleted
+    log = ctx.log_path.read_text()
+    assert "staged PPK images to local scratch" in log
+    assert "removed local scratch copy" in log
+
+
 def test_pix4d_after_exit_times_out_without_ortho(pix4d_env, tmp_path):
     cfg, root, params = pix4d_env
     proc = Pix4dMaticProcessor(cfg)
