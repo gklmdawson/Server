@@ -371,11 +371,17 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   );
 }
 
-function BrowseButton({ show, onClick }) {
+// `hero` renders the Sunrise Yellow-on-Navy CTA variant (see .btn.hero) for
+// the one field a form wants the user to start from.
+function BrowseButton({ show, onClick, hero, label }) {
   if (!show) return null;
   return (
-    <button type="button" className="btn small browse" onClick={onClick}>
-      Browse…
+    <button
+      type="button"
+      className={`btn browse ${hero ? "hero" : "small"}`}
+      onClick={onClick}
+    >
+      {label || "Browse…"}
     </button>
   );
 }
@@ -424,7 +430,7 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
 
 // Multi-path textarea, one path per line (source folders, base data files).
 // Grows with its content so every added path stays visible without scrolling.
-export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta }) {
+export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
   const taRef = useRef(null);
@@ -456,7 +462,12 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           onChange={(e) => onChange(e.target.value)}
           onBlur={() => onChange(normalizeLines(value))}
         />
-        <BrowseButton show={roots.length > 0} onClick={() => setOpen(true)} />
+        <BrowseButton
+          show={roots.length > 0}
+          onClick={() => setOpen(true)}
+          hero={browseHero}
+          label={browseLabel}
+        />
       </div>
       <DropNote note={note} />
       {open && (
