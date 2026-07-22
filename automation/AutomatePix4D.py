@@ -381,23 +381,32 @@ class Pix4DAutomation:
         time.sleep(.5)
         license_check_btn = self.win.child_window(title="Go to device manager", control_type="Button")
         apply_btn = self.win.child_window(title="Apply", control_type="Button")
+        reclaim_btn = self.win.child_window(title="Reclaim", control_type="Button")
         time.sleep(.5)
-        if license_check_btn: 
+        if license_check_btn.exists():
             time.sleep(.5)
             self._click_offset_from_anchor("Organizations and licenses", "Text", dx=0, dy=300)
             _logger.info("License check button detected, no license found.")
-        if apply_btn:
-            time.sleep(.5)
-            apply_btn.click_input()
-        
+            if apply_btn.exists():
+                time.sleep(.5)
+                apply_btn.click_input()
+            else:
+                time.sleep(1)
+                license_check_btn.click_input()
+                time.sleep(2.5)
+                self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=150)
+                if reclaim_btn.exists():
+                    time.sleep(.5)
+                    reclaim_btn.click_input()
+                else:
+                    self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=185)
 
-
-        
 
     def check_license(self):
         """Check the license status of PIX4Dmatic."""
         _logger.info("Checking license status...")
         popup = self.win.child_window(title="Go to Organizations  Licenses", control_type="Button")
+
         if popup.exists():
             send_keys("{ESC}")
             self.get_license()
@@ -406,7 +415,7 @@ class Pix4DAutomation:
             if trial_btn.exists():
                 _logger.warning("Found 'Start trial' button, proceeding with license activation.")
                 self.get_license()
-            _logger.warning("Could not find 'Start trial' button, license is present.")
+        _logger.warning("Could not find 'Start trial' button, license is present.")
         
         pass
 
