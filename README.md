@@ -63,7 +63,7 @@ history: [DESIGN.md](DESIGN.md)
 pip install -e ".[coordinator,agent,dev]"
 python -m coordinator.main            # http://127.0.0.1:8443
 python scripts/fake_agent.py --node TERRA-01 --capabilities TERRA_PPK,TERRA_LIDAR
-pytest                                # 130 tests
+pytest                                # 196 tests
 
 # Web UI (only needed when changing it — production builds it in Docker):
 cd web && npm install
@@ -103,3 +103,7 @@ page, so the PyInstaller EXE workflow still works without Node.
 * Agents make outbound connections only; one job per machine, structurally.
 * Completion = output validation, never exit codes alone. Failed GUI jobs
   keep a failure bundle (screenshot + logs) on the workstation for 7 days.
+* Optional phone alerts via [ntfy.sh](https://ntfy.sh): set
+  `DATA_INTAKE_NTFY_TOPIC` in `.env` and subscribe to the topic in the ntfy
+  app — failures and lost nodes page loudly, chain progress ticks silently
+  (see DEPLOY.md "Get alerts on your phone").

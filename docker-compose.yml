@@ -33,6 +33,10 @@ services:
       - /mnt/@usb:/mnt/ingest:ro,rslave
     environment:
       - DATA_INTAKE_ADMIN_TOKEN=${DATA_INTAKE_ADMIN_TOKEN:?set it in .env}
+      # ntfy push alerts (coordinator/notify.py). Empty topic = disabled.
+      - DATA_INTAKE_NTFY_TOPIC=${DATA_INTAKE_NTFY_TOPIC:-}
+      - DATA_INTAKE_NTFY_SERVER=${DATA_INTAKE_NTFY_SERVER:-}
+      - DATA_INTAKE_NTFY_TOKEN=${DATA_INTAKE_NTFY_TOKEN:-}
     restart: unless-stopped
 
   # The NAS-local half of the split intake: builds the folder tree and copies

@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from coordinator import __version__
+from coordinator import __version__, notify
 from coordinator.assign import (
     housekeeping,
     node_has_active_job,
@@ -277,6 +277,8 @@ def report_started(job_uuid: str, body: StartedReport, request: Request,
               body.message or (f"pid {body.pid}" if body.pid else ""),
               details={"pid": body.pid} if body.pid else None,
               node_name=job.assigned_node)
+    if revived:
+        notify.job_recovered(job, "A start report arrived — the job is running.")
     return {"ok": True, "status": job.status}
 
 
@@ -299,6 +301,7 @@ def report_progress(job_uuid: str, body: ProgressReport, request: Request,
         job.error_message = ""
         log_event(session, job, EventType.REVIVED.value,
                   "Progress report received after node loss", node_name=job.assigned_node)
+        notify.job_recovered(job, "A progress report arrived — the job is running.")
     now = utcnow()
     message_changed = bool(body.message) and body.message != job.progress_message
     if body.progress_percent is not None:
@@ -336,6 +339,22 @@ def report_succeeded(job_uuid: str, body: SucceededReport, request: Request,
               details={"outputs": body.outputs, "validation": body.validation,
                        "exit_code": body.exit_code},
               node_name=job.assigned_node)
+    # Chain progress alert — silent tick per finished step, a real notification
+    # when the whole submission is done (nothing left but SUCCEEDED, ignoring
+    # deliberately CANCELLED branches).
+    project = job.project
+    if project is not None:
+        total = len(project.jobs)
+        done = sum(1 for j in project.jobs if j.status == JobStatus.SUCCEEDED.value)
+        remaining = [j for j in project.jobs
+                     if j.status not in (JobStatus.SUCCEEDED.value,
+                                         JobStatus.CANCELLED.value)]
+        if not remaining:
+            notify.project_complete(project, done, finished_at=now)
+        else:
+            notify.job_succeeded(job, done=done, total=total)
+    else:
+        notify.job_succeeded(job)
     return {"ok": True, "status": job.status}
 
 
@@ -360,6 +379,7 @@ def report_failed(job_uuid: str, body: FailedReport, request: Request,
               details={"exit_code": body.exit_code, "error_code": body.error_code,
                        "artifacts_path": body.artifacts_path},
               node_name=job.assigned_node)
+    notify.job_failed(job)
     return {"ok": True, "status": job.status}
 
 
@@ -491,6 +511,10 @@ def submit_intake(body: IntakeSubmit, request: Request,
             priority=None, max_runtime_minutes=None,
         )
         created.append(job)
+
+    chains = [name for name, on in (("photo", body.run_photo_chain),
+                                    ("lidar", body.run_lidar_chain)) if on]
+    notify.intake_submitted(project, len(created), chains)
 
     return {
         "project_uuid": project.uuid,

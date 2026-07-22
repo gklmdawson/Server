@@ -440,6 +440,22 @@ whose agent is still alive, it re-registers on its next sync (token-less
 mode) or is rejected with 401 (token mode) — hence stopping the agent
 first. `DELETE /api/v1/nodes/<name>` is the API equivalent.
 
+**Get alerts on your phone (ntfy)** — the coordinator can push alerts
+through [ntfy.sh](https://ntfy.sh): set `DATA_INTAKE_NTFY_TOPIC` in `.env`
+(`.env.example` ships a generated topic; regenerate your own with
+`python -c "import secrets; print('data-intake-' + secrets.token_urlsafe(24))"`),
+`docker compose up -d`, then install the ntfy app (iOS/Android, or use
+https://ntfy.sh in a browser) and subscribe to that exact topic — no account
+needed. The topic name is the only credential: anyone who knows it can read
+the alerts, so treat it like a password. What you'll get: **loud** —
+job failed, job needs attention (node lost / lease expired); **normal** —
+project fully processed, node offline; **silent** — each chain step done
+(with x/y progress), job recovered, node back online, new intake submitted.
+Alerts are fire-and-forget: if ntfy is unreachable nothing blocks or
+retries, so the queue never waits on the internet. Self-hosting ntfy?
+Point `DATA_INTAKE_NTFY_SERVER` (and `DATA_INTAKE_NTFY_TOKEN` if your
+topic needs auth) at it.
+
 **Move the coordinator** — stop the container, copy the whole
 `data-intake/` folder (including `data/`) to the new host,
 `docker compose up -d --build`, repoint each agent's `coordinator_url`

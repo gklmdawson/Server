@@ -75,6 +75,17 @@ browse_roots:
 # (container: /data/eject; host: <compose dir>/data/eject). Empty = disabled.
 # eject_spool_dir: /data/eject
 
+# Push alerts via ntfy (https://ntfy.sh). Empty topic = disabled. Subscribe to
+# the topic in the ntfy app to get: job failed / needs attention (high
+# priority), project complete + node offline (default), and silent chain
+# progress / new intake ticks (low). The topic name is the only credential —
+# prefer setting DATA_INTAKE_NTFY_TOPIC in .env (Docker) over this file, and
+# generate an unguessable one:
+#   python -c "import secrets; print('data-intake-' + secrets.token_urlsafe(24))"
+# ntfy_server: https://ntfy.sh
+# ntfy_topic: ""
+# ntfy_token: ""     # only for a self-hosted server / reserved topic
+
 # Workflow chain templates instantiated by POST /api/v1/projects.
 templates:
   photo_ppk:

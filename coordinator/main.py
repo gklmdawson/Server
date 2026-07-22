@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from coordinator import __version__
+from coordinator import __version__, notify
 from coordinator.api import router
 from coordinator.config import CoordinatorConfig, load_config
 from coordinator.db import init_db, make_engine, make_session_factory
@@ -65,6 +65,7 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> FastAPI:
 
     engine = make_engine(cfg.db_path)
     init_db(engine)
+    notify.configure(cfg)
 
     app = FastAPI(title="Data Intake Coordinator", version=__version__)
     app.state.cfg = cfg
