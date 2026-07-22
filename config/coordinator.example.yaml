@@ -61,19 +61,38 @@ browse_roots:
   3dData:
     path: /mnt/3dData
     display: \\192.168.35.25\3dData
-  # The card reader, mounted read-only (see docker-compose.yml). `ejectable`
-  # adds an Eject button per device in the web picker; it needs eject_spool_dir
-  # below AND the host-side watcher running (scripts/nas_eject_watcher.py).
+  # The card reader, mounted read-only (see docker-compose.yml).
+  # `mounted_only` hides top-level device folders with no drive mounted on
+  # them — the host keeps an (empty) mount-point folder for every USB device
+  # it has ever seen, so without it Browse lists stale mounts. `ejectable`
+  # adds an Eject button per device in the web picker (and implies
+  # mounted_only); it needs eject_spool_dir below AND the host-side watcher
+  # running (scripts/nas_eject_watcher.py).
   # ingest:
   #   path: /mnt/ingest
   #   display: /mnt/ingest
+  #   mounted_only: true
   #   ejectable: true
 
-# Media eject: the coordinator container can't unmount the NAS's cards, so it
-# spools eject requests here for the host watcher to act on. Point it at a
-# folder both the container and host see — a subdir of the /data volume works
-# (container: /data/eject; host: <compose dir>/data/eject). Empty = disabled.
+# Host-action spool: the coordinator container can't unmount the NAS's cards
+# or restart its own containers, so it spools those requests here for the host
+# watcher (scripts/nas_eject_watcher.py) to act on. Powers both the Eject
+# buttons and the picker's "Rescan cards" (container restart) button. Point it
+# at a folder both the container and host see — a subdir of the /data volume
+# works (container: /data/eject; host: <compose dir>/data/eject).
+# Empty = both features disabled.
 # eject_spool_dir: /data/eject
+
+# Push alerts via ntfy (https://ntfy.sh). Empty topic = disabled. Subscribe to
+# the topic in the ntfy app to get: job failed / needs attention (high
+# priority), project complete + node offline (default), and silent chain
+# progress / new intake ticks (low). The topic name is the only credential —
+# prefer setting DATA_INTAKE_NTFY_TOPIC in .env (Docker) over this file, and
+# generate an unguessable one:
+#   python -c "import secrets; print('data-intake-' + secrets.token_urlsafe(24))"
+# ntfy_server: https://ntfy.sh
+# ntfy_topic: ""
+# ntfy_token: ""     # only for a self-hosted server / reserved topic
 
 # Workflow chain templates instantiated by POST /api/v1/projects.
 templates:

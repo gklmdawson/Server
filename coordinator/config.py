@@ -103,6 +103,16 @@ class CoordinatorConfig:
     upload_dir: str = "data/uploads"
     max_upload_bytes: int = 64 * 1024 * 1024  # 64 MB — base/csv are tiny
 
+    # Push alerts via ntfy (coordinator/notify.py). Empty topic = disabled.
+    # The topic name is the only credential — generate an unguessable one
+    # (python -c "import secrets; print('data-intake-' + secrets.token_urlsafe(24))")
+    # and prefer the DATA_INTAKE_NTFY_TOPIC environment variable (.env) over
+    # putting it here. ntfy_token is only needed for a self-hosted server or an
+    # ntfy.sh reserved topic with access control.
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""
+    ntfy_token: str = ""
+
     log_level: str = "INFO"
 
     @classmethod
@@ -135,6 +145,15 @@ class CoordinatorConfig:
         env_port = os.environ.get("DATA_INTAKE_PORT")
         if env_port:
             self.port = int(env_port)
+        env_ntfy_topic = os.environ.get("DATA_INTAKE_NTFY_TOPIC")
+        if env_ntfy_topic:
+            self.ntfy_topic = env_ntfy_topic
+        env_ntfy_server = os.environ.get("DATA_INTAKE_NTFY_SERVER")
+        if env_ntfy_server:
+            self.ntfy_server = env_ntfy_server
+        env_ntfy_token = os.environ.get("DATA_INTAKE_NTFY_TOKEN")
+        if env_ntfy_token:
+            self.ntfy_token = env_ntfy_token
 
     def max_runtime_for(self, job_type: str) -> int:
         return int(self.job_max_runtime_minutes.get(job_type, self.default_max_runtime_minutes))

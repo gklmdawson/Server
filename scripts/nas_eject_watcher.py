@@ -1,34 +1,44 @@
 #!/usr/bin/env python3
-"""Host-side media-eject watcher for the Data Intake coordinator.
+"""Host-side watcher for the Data Intake coordinator's privileged actions.
 
 The coordinator runs in a Docker container and can't unmount the NAS host's
 SD/USB cards itself (a umount inside the container only affects the container's
-mount namespace). So the web UI's Eject button spools a request file; THIS
-script — running on the NAS host as root — does the real umount and writes the
-result back. See DEPLOY.md "Media eject".
+mount namespace) — and it obviously can't `docker restart` itself either. So
+the web UI spools a request file; THIS script — running on the NAS host as
+root — does the real work and writes the result back. See DEPLOY.md
+"Media eject & container restart".
 
 Protocol (a shared spool dir both the container and host see, e.g. a subdir of
 the coordinator's ./data volume):
 
-    <spool>/requests/<id>.json   {"id","device","requested_at"}   (container writes)
-    <spool>/results/<id>.json    {"id","ok","message"}            (this writes back)
+    <spool>/requests/<id>.json   {"id","action","device"?,"requested_at"}  (container)
+    <spool>/results/<id>.json    {"id","ok","message"}                     (this)
 
-`device` is a single path segment (e.g. "sda1"); this script resolves it under
---usb-base and refuses anything that isn't an actual mountpoint beneath it, so
-the container can never ask it to unmount something off the card base.
+Actions:
+  eject (default when absent, for older coordinators):
+    `device` is a single path segment (e.g. "sda1"); this script resolves it
+    under --usb-base and refuses anything that isn't directly beneath it, so
+    the container can never ask it to unmount something off the card base.
+  restart:
+    runs the FIXED command given by --restart-cmd (refused when unset). The
+    request carries no arguments, so the container can't choose what runs.
+    The result is written BEFORE the command executes — the coordinator dies
+    with the restart, so it must answer the browser first.
 
 Run it as a systemd service (scripts/data-intake-eject.service). Stdlib only —
 no pip installs on the NAS.
 
     sudo python3 nas_eject_watcher.py \
         --spool /volume1/docker/data-intake/data/eject \
-        --usb-base /mnt/@usb
+        --usb-base /mnt/@usb \
+        --restart-cmd "docker restart data-intake-coordinator data-intake-copy"
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -78,8 +88,39 @@ def do_umount(target: Path, power_off: bool) -> tuple[bool, str]:
     return True, msg
 
 
+def write_result(results_dir: Path, req_id: str, ok: bool, msg: str) -> None:
+    result = {"id": req_id, "ok": ok, "message": msg}
+    tmp = results_dir / f"{req_id}.json.tmp"
+    tmp.write_text(json.dumps(result), encoding="utf-8")
+    os.replace(tmp, results_dir / f"{req_id}.json")
+
+
+def do_restart(req_id: str, results_dir: Path, cmd: str) -> None:
+    """Answer first, restart second: the restart kills the coordinator, so its
+    response to the browser has to get out before the command runs."""
+    if not cmd:
+        msg = ("restart is not enabled on the watcher — start it with "
+               "--restart-cmd (see scripts/data-intake-eject.service)")
+        log(f"FAIL restart: {msg}")
+        write_result(results_dir, req_id, False, msg)
+        return
+
+    write_result(results_dir, req_id, True,
+                 "Restarting the data-intake containers…")
+    log(f"restart: running {cmd!r} in 2s")
+    time.sleep(2.0)  # let the coordinator consume the result and answer
+    try:
+        proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True,
+                              timeout=300)
+        out = (proc.stderr or proc.stdout or "").strip()
+        status = "OK" if proc.returncode == 0 else f"FAILED (exit {proc.returncode})"
+        log(f"restart {status}" + (f": {out}" if out else ""))
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"restart command failed: {exc}")
+
+
 def handle(req_path: Path, results_dir: Path, usb_base: Path,
-           power_off: bool) -> None:
+           power_off: bool, restart_cmd: str) -> None:
     try:
         data = json.loads(req_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -88,8 +129,18 @@ def handle(req_path: Path, results_dir: Path, usb_base: Path,
         return
 
     req_id = str(data.get("id") or req_path.stem)
-    device = str(data.get("device") or "")
+    action = str(data.get("action") or "eject")  # older coordinators: eject only
+    req_path.unlink(missing_ok=True)
 
+    if action == "restart":
+        do_restart(req_id, results_dir, restart_cmd)
+        return
+    if action != "eject":
+        log(f"FAIL unknown action {action!r}")
+        write_result(results_dir, req_id, False, f"unknown action: {action!r}")
+        return
+
+    device = str(data.get("device") or "")
     if not valid_device(device):
         ok, msg = False, f"invalid device name: {device!r}"
     else:
@@ -101,11 +152,7 @@ def handle(req_path: Path, results_dir: Path, usb_base: Path,
             ok, msg = do_umount(target, power_off)
 
     log(f"{'OK' if ok else 'FAIL'} device={device}: {msg}")
-    result = {"id": req_id, "ok": ok, "message": msg}
-    tmp = results_dir / f"{req_id}.json.tmp"
-    tmp.write_text(json.dumps(result), encoding="utf-8")
-    os.replace(tmp, results_dir / f"{req_id}.json")
-    req_path.unlink(missing_ok=True)
+    write_result(results_dir, req_id, ok, msg)
 
 
 def sweep_stale_results(results_dir: Path, max_age: float = 300.0) -> None:
@@ -131,6 +178,11 @@ def main() -> int:
                     help="seconds between spool scans (default: 1)")
     ap.add_argument("--power-off", action="store_true",
                     help="also udisksctl power-off the device after umount")
+    ap.add_argument("--restart-cmd", default="",
+                    help='command run for "restart" requests from the web UI, '
+                         'e.g. "docker restart data-intake-coordinator '
+                         'data-intake-copy" (or a docker compose -f … restart). '
+                         "Empty (default) = restart requests are refused.")
     args = ap.parse_args()
 
     spool = Path(args.spool)
@@ -143,11 +195,12 @@ def main() -> int:
     if os.name == "posix" and os.geteuid() != 0:
         log("WARNING: not running as root — umount will likely fail")
 
-    log(f"watching {requests_dir} (usb base {usb_base})")
+    log(f"watching {requests_dir} (usb base {usb_base}; restart "
+        f"{'enabled' if args.restart_cmd else 'disabled'})")
     while True:
         try:
             for req in sorted(requests_dir.glob("*.json")):
-                handle(req, results_dir, usb_base, args.power_off)
+                handle(req, results_dir, usb_base, args.power_off, args.restart_cmd)
             sweep_stale_results(results_dir)
         except Exception as exc:  # never let the loop die
             log(f"loop error: {exc}")

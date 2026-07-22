@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
+import { useContainerRestart } from "./useContainerRestart.js";
 
 // Path fields with a server-side file explorer behind them. The browser can
 // never see WHERE a locally dropped file lives (only its name/bytes), so
@@ -97,8 +98,14 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const [ejecting, setEjecting] = useState("");   // device name in flight
   const [ejectMsg, setEjectMsg] = useState(null); // {ok, text}
   const dialogRef = useRef(null);
+  const {
+    restarting,
+    message: restartMsg,
+    restart,
+  } = useContainerRestart(() => setReloadKey((k) => k + 1));
 
   const rootIsEjectable = !!roots.find((r) => r.label === rootLabel)?.ejectable;
+  const rootIsRestartable = !!roots.find((r) => r.label === rootLabel)?.restartable;
 
   useEffect(() => {
     dialogRef.current?.showModal();
@@ -164,6 +171,10 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const visible = (listing?.entries || []).filter(
     (e) => e.dir || (mode === "file" && matchesExt(e.name, exts))
   );
+  // Empty media root: the Rescan button moves into the empty state (the
+  // stuck-user moment); the breadcrumb copy only shows alongside entries
+  // (the "second card isn't appearing" case) so it's never duplicated.
+  const topLevelEmpty = !!listing && visible.length === 0 && listing.parent === null;
 
   return (
     <dialog className="picker" ref={dialogRef} onClose={onClose}>
@@ -210,12 +221,30 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               {part}
             </button>
           ))}
+          {rootIsRestartable && !topLevelEmpty && (
+            <span style={{ flex: 1, textAlign: "right" }}>
+              <button
+                type="button"
+                className="btn small"
+                title="Restart the NAS containers so a freshly plugged card shows up"
+                disabled={restarting || !!ejecting}
+                onClick={restart}
+              >
+                {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
+              </button>
+            </span>
+          )}
         </div>
       )}
 
       {ejectMsg && (
         <div className={`banner ${ejectMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
           {ejectMsg.text}
+        </div>
+      )}
+      {restartMsg && (
+        <div className={`banner ${restartMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
+          {restartMsg.text}
         </div>
       )}
 
@@ -278,8 +307,24 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               )}
             </div>
           ))}
-        {listing && visible.length === 0 && listing.parent === null && (
-          <div className="empty">Nothing here.</div>
+        {topLevelEmpty && (
+          <div className="empty">
+            {rootIsRestartable ? (
+              <div className="empty-rescan">
+                <div>No card mounted. Plug the card into the NAS — if it still doesn't show:</div>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={restarting || !!ejecting}
+                  onClick={restart}
+                >
+                  {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
+                </button>
+              </div>
+            ) : (
+              "Nothing here."
+            )}
+          </div>
         )}
         {listing?.truncated && (
           <div className="banner error">Folder too large — showing the first entries only.</div>
@@ -309,11 +354,17 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   );
 }
 
-function BrowseButton({ show, onClick }) {
+// `hero` renders the Sunrise Yellow-on-Navy CTA variant (see .btn.hero) for
+// the one field a form wants the user to start from.
+function BrowseButton({ show, onClick, hero, label }) {
   if (!show) return null;
   return (
-    <button type="button" className="btn small browse" onClick={onClick}>
-      Browse…
+    <button
+      type="button"
+      className={`btn browse ${hero ? "hero" : "small"}`}
+      onClick={onClick}
+    >
+      {label || "Browse…"}
     </button>
   );
 }
@@ -362,7 +413,7 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
 
 // Multi-path textarea, one path per line (source folders, base data files).
 // Grows with its content so every added path stays visible without scrolling.
-export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta }) {
+export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
   const taRef = useRef(null);
@@ -394,7 +445,12 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           onChange={(e) => onChange(e.target.value)}
           onBlur={() => onChange(normalizeLines(value))}
         />
-        <BrowseButton show={roots.length > 0} onClick={() => setOpen(true)} />
+        <BrowseButton
+          show={roots.length > 0}
+          onClick={() => setOpen(true)}
+          hero={browseHero}
+          label={browseLabel}
+        />
       </div>
       <DropNote note={note} />
       {open && (

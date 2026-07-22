@@ -396,6 +396,26 @@ td.num {
   color: var(--critical);
 }
 
+/* Hero CTA — a form's single "start here" action. Brand pairing straight from
+   the Sunrise guide (Yellow over Navy, the same duo as the topbar strip), so
+   it outranks the Cerulean primary without inventing a new color. Text is
+   always Navy — never the theme ink, which flips white in dark mode. */
+.btn.hero {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #113e59;
+  font-weight: 650;
+  font-size: 14px;
+  padding: 9px 16px;
+  white-space: nowrap;
+}
+
+.btn.hero:hover {
+  filter: brightness(1.05);
+  border-color: var(--warning);
+  color: #113e59;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: default;
@@ -559,6 +579,16 @@ legend {
   padding: 0 6px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* The intake form's step 1 (flight data) echoes the topbar's Yellow-over-Navy
+   brand strip so the eye lands there first. */
+fieldset.hero-step {
+  border-top: 3px solid var(--warning);
+}
+
+fieldset.hero-step legend {
+  color: var(--ink);
 }
 
 /* ---- events ---- */
@@ -875,6 +905,14 @@ dialog.picker footer {
 
 .probe-banner .btn.small {
   margin-left: 6px;
+}
+
+/* Picker empty state on a media root: message + inline Rescan button. */
+.empty-rescan {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 14px 0;
 }
 
 @media (max-width: 720px) {

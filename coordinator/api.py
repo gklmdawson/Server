@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from coordinator import __version__
+from coordinator import __version__, notify
 from coordinator.assign import (
     housekeeping,
     node_has_active_job,
@@ -277,6 +277,8 @@ def report_started(job_uuid: str, body: StartedReport, request: Request,
               body.message or (f"pid {body.pid}" if body.pid else ""),
               details={"pid": body.pid} if body.pid else None,
               node_name=job.assigned_node)
+    if revived:
+        notify.job_recovered(job, "A start report arrived — the job is running.")
     return {"ok": True, "status": job.status}
 
 
@@ -299,6 +301,7 @@ def report_progress(job_uuid: str, body: ProgressReport, request: Request,
         job.error_message = ""
         log_event(session, job, EventType.REVIVED.value,
                   "Progress report received after node loss", node_name=job.assigned_node)
+        notify.job_recovered(job, "A progress report arrived — the job is running.")
     now = utcnow()
     message_changed = bool(body.message) and body.message != job.progress_message
     if body.progress_percent is not None:
@@ -336,6 +339,22 @@ def report_succeeded(job_uuid: str, body: SucceededReport, request: Request,
               details={"outputs": body.outputs, "validation": body.validation,
                        "exit_code": body.exit_code},
               node_name=job.assigned_node)
+    # Chain progress alert — silent tick per finished step, a real notification
+    # when the whole submission is done (nothing left but SUCCEEDED, ignoring
+    # deliberately CANCELLED branches).
+    project = job.project
+    if project is not None:
+        total = len(project.jobs)
+        done = sum(1 for j in project.jobs if j.status == JobStatus.SUCCEEDED.value)
+        remaining = [j for j in project.jobs
+                     if j.status not in (JobStatus.SUCCEEDED.value,
+                                         JobStatus.CANCELLED.value)]
+        if not remaining:
+            notify.project_complete(project, done, finished_at=now)
+        else:
+            notify.job_succeeded(job, done=done, total=total)
+    else:
+        notify.job_succeeded(job)
     return {"ok": True, "status": job.status}
 
 
@@ -360,6 +379,7 @@ def report_failed(job_uuid: str, body: FailedReport, request: Request,
               details={"exit_code": body.exit_code, "error_code": body.error_code,
                        "artifacts_path": body.artifacts_path},
               node_name=job.assigned_node)
+    notify.job_failed(job)
     return {"ok": True, "status": job.status}
 
 
@@ -492,6 +512,10 @@ def submit_intake(body: IntakeSubmit, request: Request,
         )
         created.append(job)
 
+    chains = [name for name, on in (("photo", body.run_photo_chain),
+                                    ("lidar", body.run_lidar_chain)) if on]
+    notify.intake_submitted(project, len(created), chains)
+
     return {
         "project_uuid": project.uuid,
         "name": project.name,
@@ -528,6 +552,16 @@ MAX_BROWSE_ENTRIES = 5000
 BROWSE_SKIP_PREFIXES = (".", "@", "#", "~$")
 
 
+def _st_dev(path: str) -> Optional[int]:
+    """Device id of the filesystem `path` lives on (None if unreadable).
+    A folder whose st_dev differs from its parent's is a mount point — i.e.
+    a drive is actually attached there."""
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return None
+
+
 @router.get("/browse")
 def browse(request: Request, root: Optional[str] = None, path: str = "",
            cfg: CoordinatorConfig = Depends(get_cfg),
@@ -538,14 +572,25 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     With `root` (+ optional slash-separated relative `path`): the folder's
     entries, plus the `display_path` (UNC form) the picker writes into job
     parameters. Browsing never leaves the configured root.
+
+    Roots flagged `mounted_only` (default for `ejectable` roots) are
+    removable-media roots like the NAS card reader: the host keeps a
+    mount-point folder per USB device it has ever seen, so the top level only
+    lists folders with a drive actually mounted on them (st_dev differs from
+    the root's) instead of every stale empty mount dir. Deeper levels are
+    inside a mounted drive and are never filtered.
     """
     roots = cfg.browse_roots or {}
     eject_on = bool(cfg.eject_spool_dir)
     if root is None:
+        # `restartable`: removable-media roots where the Rescan (container
+        # restart) button makes sense — needs the same host watcher as eject.
         return {"roots": [
             {"label": label,
              "display": str(spec.get("display") or spec.get("path", "")),
-             "ejectable": eject_on and bool(spec.get("ejectable"))}
+             "ejectable": eject_on and bool(spec.get("ejectable")),
+             "restartable": eject_on and bool(spec.get("mounted_only")
+                                              or spec.get("ejectable"))}
             for label, spec in roots.items() if spec.get("path")
         ]}
 
@@ -575,6 +620,9 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
     if display_path.endswith(sep) and stripped and not stripped.endswith(":"):
         display_path = stripped
 
+    mounted_only = bool(spec.get("mounted_only", spec.get("ejectable")))
+    base_dev = _st_dev(target) if (mounted_only and target == base) else None
+
     entries: list[dict[str, Any]] = []
     truncated = False
     with os.scandir(target) as it:
@@ -586,6 +634,8 @@ def browse(request: Request, root: Optional[str] = None, path: str = "",
                 size = 0 if is_dir else entry.stat().st_size
             except OSError:
                 continue
+            if base_dev is not None and is_dir and _st_dev(entry.path) == base_dev:
+                continue  # same filesystem as the root -> no drive mounted here
             entries.append({"name": entry.name, "dir": is_dir, "size": size})
             if len(entries) >= MAX_BROWSE_ENTRIES:
                 truncated = True
@@ -709,6 +759,47 @@ def intake_eject(request: Request, body: EjectRequest,
                             or "the host could not eject the card")
     logger.info("Ejected device %s under root %s", device, body.root)
     return {"ok": True, "device": device, "message": result.message or "Card ejected — safe to remove."}
+
+
+@router.post("/intake/restart")
+def intake_restart(request: Request,
+                   cfg: CoordinatorConfig = Depends(get_cfg),
+                   session: Session = Depends(get_session),
+                   _admin: None = Depends(require_admin)) -> dict[str, Any]:
+    """Restart the data-intake containers via the host watcher — the fix for a
+    hot-plugged card that never propagated into the container's mount
+    namespace. Uses the same spool as eject; the watcher acknowledges BEFORE
+    running the restart (this process dies with it), so this response reaches
+    the browser and the UI then polls /health until the coordinator is back."""
+    from coordinator import eject as eject_mod
+
+    if not cfg.eject_spool_dir:
+        raise HTTPException(status_code=404,
+                            detail="Container restart is not configured "
+                                   "(set eject_spool_dir and run the host watcher)")
+    # The restart kills the NAS-local copy worker too — never yank a card copy
+    # out from under it. Jobs on the Windows boxes only lose a sync or two.
+    busy = session.execute(
+        select(Job.uuid).where(
+            Job.status.in_(ACTIVE),
+            Job.job_type == "INTAKE_COPY",
+        ).limit(1)
+    ).scalar_one_or_none()
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An INTAKE_COPY job ({busy[:8]}) is running in the NAS "
+                   "container — restarting now would kill the copy. Wait for "
+                   "it to finish (or cancel it) first.")
+
+    result = eject_mod.restart(cfg.eject_spool_dir, cfg.eject_timeout_seconds)
+    if result.pending:
+        raise HTTPException(status_code=504, detail=result.message)
+    if not result.ok:
+        raise HTTPException(status_code=409,
+                            detail=result.message or "the host watcher refused the restart")
+    logger.info("Container restart requested via the web UI")
+    return {"ok": True, "message": result.message or "Restarting containers…"}
 
 
 @router.post("/intake/upload", status_code=201)

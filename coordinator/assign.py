@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from coordinator import notify
 from coordinator.config import CoordinatorConfig
 from coordinator.db import Job, Node, log_event, utcnow
 from shared.schemas import EventType, JobStatus
@@ -134,6 +135,7 @@ def housekeeping(session: Session, cfg: CoordinatorConfig, now: Optional[datetim
             )
             log_event(session, job, EventType.NEEDS_ATTENTION.value,
                       job.error_message, node_name=node_name)
+            notify.job_needs_attention(job)
         else:
             job.status = JobStatus.QUEUED.value
             job.assigned_node = ""
@@ -146,11 +148,9 @@ def housekeeping(session: Session, cfg: CoordinatorConfig, now: Optional[datetim
     running = session.execute(
         select(Job).where(Job.status == JobStatus.RUNNING.value)
     ).scalars().all()
+    all_nodes = session.execute(select(Node)).scalars().all()
     if running:
-        nodes = {
-            n.node_name: n
-            for n in session.execute(select(Node)).scalars().all()
-        }
+        nodes = {n.node_name: n for n in all_nodes}
         for job in running:
             node = nodes.get(job.assigned_node)
             last_seen = node.last_sync_at if node else None
@@ -163,6 +163,9 @@ def housekeeping(session: Session, cfg: CoordinatorConfig, now: Optional[datetim
                 )
                 log_event(session, job, EventType.NEEDS_ATTENTION.value,
                           job.error_message, node_name=job.assigned_node)
+                notify.job_needs_attention(job)
+
+    notify.check_nodes(all_nodes, now, cfg.offline_after_seconds)
 
 
 def reconcile_reported_jobs(session: Session, node: Node, reported_uuids: list[str],
@@ -194,6 +197,8 @@ def reconcile_reported_jobs(session: Session, node: Node, reported_uuids: list[s
                 log_event(session, job, EventType.REVIVED.value,
                           f"{node.node_name} reconnected and still reports this job active",
                           node_name=node.node_name)
+                notify.job_recovered(
+                    job, f"{node.node_name} reconnected and still reports the job active.")
             job.last_progress_at = now
         elif job.status == JobStatus.RUNNING.value:
             started = job.started_at or job.assigned_at or now
@@ -207,3 +212,4 @@ def reconcile_reported_jobs(session: Session, node: Node, reported_uuids: list[s
                 )
                 log_event(session, job, EventType.NEEDS_ATTENTION.value,
                           job.error_message, node_name=node.node_name)
+                notify.job_needs_attention(job)

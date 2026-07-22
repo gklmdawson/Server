@@ -306,8 +306,68 @@ export default function Submit({ onSubmitted }) {
     <section className="card">
       <h2>Submit a flight</h2>
       <form className="intake" onSubmit={submit}>
+        {/* The flight folder is the true starting point: probing it fills
+            sensor/date/EPSG (and picks chain defaults) for everything below,
+            so it leads the form and gets the brand-yellow hero CTA. */}
+        <fieldset className="hero-step">
+          <legend>1 · Flight data — start here</legend>
+          <PathLines
+            label="Source folder(s) — one per line"
+            hint="the flight data on the share/card; picking one auto-fills sensor, date & EPSG below"
+            required
+            value={form.sources}
+            onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
+            roots={browseRoots}
+            mode="folder"
+            pickerTitle="Pick source folder(s)"
+            onPickMeta={onSourceMeta}
+            browseHero
+            browseLabel="📂 Pick flight folder(s)…"
+          />
+          {(probing || probeInfo) && (
+            <div className={`banner ${probeInfo?.error ? "error" : "ok"} probe-banner`}>
+              {probing && "Reading flight images on the NAS…"}
+              {probeInfo?.error && `Auto-detect unavailable: ${probeInfo.error}`}
+              {probeInfo && !probeInfo.error && (
+                <>
+                  Auto-detected{" "}
+                  <b>{probeInfo.sensor || "unknown sensor"}</b>
+                  {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
+                  {probeInfo.date ? `, ${probeInfo.date}` : ""}
+                  {probeInfo.epsg_h
+                    ? `, EPSG ${probeInfo.epsg_h}${
+                        epsgName(probeInfo.epsg_h) ? ` (${epsgName(probeInfo.epsg_h)})` : ""
+                      }/${probeInfo.epsg_v || "?"}${
+                        epsgName(probeInfo.epsg_v) ? ` (${epsgName(probeInfo.epsg_v)})` : ""
+                      }`
+                    : ", no EPSG (enter manually)"}{" "}
+                  from {probeInfo.image_count || 0} image
+                  {probeInfo.image_count === 1 ? "" : "s"}. Auto-filled fields are
+                  locked — click 🔒 to edit.
+                  {"  "}
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={rtkBusy}
+                    onClick={checkRtk}
+                  >
+                    {rtkBusy ? "Scanning…" : "Check RTK coverage"}
+                  </button>
+                  {rtk && !rtk.error && rtk.fixed_pct != null && (
+                    <span className="hint">
+                      {" "}
+                      RTK fixed on {rtk.fixed_pct.toFixed(0)}% of {rtk.total_photos} photos
+                    </span>
+                  )}
+                  {rtk?.error && <span className="hint"> RTK scan: {rtk.error}</span>}
+                </>
+              )}
+            </div>
+          )}
+        </fieldset>
+
         <fieldset>
-          <legend>Project</legend>
+          <legend>2 · Project</legend>
           <div className="row3">
             <div className="field">
               <label>Client</label>
@@ -382,59 +442,7 @@ export default function Submit({ onSubmitted }) {
         </fieldset>
 
         <fieldset>
-          <legend>Data</legend>
-          <PathLines
-            label="Source folder(s) — one per line"
-            hint="the flight data on the share/card; picking one auto-detects sensor, date & EPSG below"
-            required
-            value={form.sources}
-            onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
-            roots={browseRoots}
-            mode="folder"
-            pickerTitle="Pick source folder(s)"
-            onPickMeta={onSourceMeta}
-          />
-          {(probing || probeInfo) && (
-            <div className={`banner ${probeInfo?.error ? "error" : "ok"} probe-banner`}>
-              {probing && "Reading flight images on the NAS…"}
-              {probeInfo?.error && `Auto-detect unavailable: ${probeInfo.error}`}
-              {probeInfo && !probeInfo.error && (
-                <>
-                  Auto-detected{" "}
-                  <b>{probeInfo.sensor || "unknown sensor"}</b>
-                  {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
-                  {probeInfo.date ? `, ${probeInfo.date}` : ""}
-                  {probeInfo.epsg_h
-                    ? `, EPSG ${probeInfo.epsg_h}${
-                        epsgName(probeInfo.epsg_h) ? ` (${epsgName(probeInfo.epsg_h)})` : ""
-                      }/${probeInfo.epsg_v || "?"}${
-                        epsgName(probeInfo.epsg_v) ? ` (${epsgName(probeInfo.epsg_v)})` : ""
-                      }`
-                    : ", no EPSG (enter manually)"}{" "}
-                  from {probeInfo.image_count || 0} image
-                  {probeInfo.image_count === 1 ? "" : "s"}. Auto-filled fields are
-                  locked — click 🔒 to edit.
-                  {"  "}
-                  <button
-                    type="button"
-                    className="btn small"
-                    disabled={rtkBusy}
-                    onClick={checkRtk}
-                  >
-                    {rtkBusy ? "Scanning…" : "Check RTK coverage"}
-                  </button>
-                  {rtk && !rtk.error && rtk.fixed_pct != null && (
-                    <span className="hint">
-                      {" "}
-                      RTK fixed on {rtk.fixed_pct.toFixed(0)}% of {rtk.total_photos} photos
-                    </span>
-                  )}
-                  {rtk?.error && <span className="hint"> RTK scan: {rtk.error}</span>}
-                </>
-              )}
-            </div>
-          )}
-
+          <legend>3 · Base station</legend>
           <UploadField
             label="Base data file(s)"
             hint="Trimble .T0x or RINEX obs — type is auto-detected; uploaded to the NAS"
@@ -540,7 +548,7 @@ export default function Submit({ onSubmitted }) {
         </fieldset>
 
         <fieldset>
-          <legend>Processing</legend>
+          <legend>4 · Processing</legend>
           <label className="check">
             <input
               type="checkbox"
