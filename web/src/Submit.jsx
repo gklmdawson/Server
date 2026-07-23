@@ -28,6 +28,7 @@ import Typography from "@mui/material/Typography";
 import LockIcon from "@mui/icons-material/Lock";
 import { api } from "./api.js";
 import { PathInput, PathLines, normalizePath } from "./FilePicker.jsx";
+import { SunsetProgress } from "./SunsetProgress.jsx";
 import { UploadField } from "./UploadField.jsx";
 import { ErrorBanner } from "./ui.jsx";
 
@@ -345,6 +346,21 @@ export default function Submit({ onSubmitted }) {
   const models = options.defaults?.classify_models || [];
   const showEcefInput = ecefManual || form.ecef.trim() !== "" || locked.ecef;
 
+  // Required fields drive both the sunset (how far the sun has set) and whether
+  // the Queue button is shown at all.
+  const requiredChecks = [
+    form.sources.trim(),
+    form.client.trim(),
+    form.project.trim(),
+    form.date.trim(),
+    form.sensor_type,
+    form.root_path.trim(),
+  ];
+  const requiredTotal = requiredChecks.length;
+  const filledCount = requiredChecks.filter(Boolean).length;
+  const allRequired = filledCount === requiredTotal;
+  const remaining = requiredTotal - filledCount;
+
   const probeAlert = () => {
     if (probing) {
       return (
@@ -400,6 +416,7 @@ export default function Submit({ onSubmitted }) {
     <section className="card">
       <h2>Submit a flight</h2>
       <form className="intake" onSubmit={submit}>
+        <SunsetProgress filled={filledCount} total={requiredTotal} />
         {/* The flight folder is the true starting point: probing it fills
             sensor/date/EPSG (and picks chain defaults) for everything below,
             so it leads the form and gets the brand-yellow hero CTA. */}
@@ -786,9 +803,22 @@ export default function Submit({ onSubmitted }) {
 
         <ErrorBanner error={error} prefix="Submission rejected" />
         <div>
-          <Button variant="contained" size="large" type="submit" loading={busy}>
-            Queue it
-          </Button>
+          {allRequired ? (
+            <Button
+              className="queue-reveal"
+              variant="contained"
+              size="large"
+              type="submit"
+              loading={busy}
+            >
+              Queue it
+            </Button>
+          ) : (
+            <Chip
+              variant="outlined"
+              label={`Fill ${remaining} more required field${remaining === 1 ? "" : "s"} to queue`}
+            />
+          )}
         </div>
       </form>
     </section>

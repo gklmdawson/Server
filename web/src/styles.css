@@ -921,3 +921,124 @@ dialog.picker footer {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- sunset progress (Submit form) ----
+   The sun's position and the sky's warmth are driven by --p (0..1 = fraction
+   of required fields filled), so completing a field animates the sun a step
+   lower. Colors are the Sunrise dusk: Navy -> Cedar -> Yellow. */
+
+.sunset {
+  position: relative;
+  height: 148px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  isolation: isolate;
+  user-select: none;
+  /* cool dusk base; the warm layer fades in over it as fields fill */
+  background: linear-gradient(180deg, #0b1a24 0%, #16303f 60%, #24505c 100%);
+}
+
+.sunset .warm {
+  position: absolute;
+  inset: 0;
+  opacity: var(--p, 0);
+  transition: opacity 0.9s ease;
+  background: linear-gradient(180deg, #113e59 0%, #6b3f57 38%, #ca563c 66%, #ffd457 100%);
+}
+
+.sunset .sun {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  /* arc down and across as --p climbs 0 -> 1 */
+  left: calc(12% + 68% * var(--p, 0));
+  top: calc(10% + 56% * var(--p, 0));
+  background: radial-gradient(circle at 50% 42%, #fff6d0 0%, #ffdf7a 55%, #f2a63b 100%);
+  box-shadow: 0 0 calc(12px + 46px * var(--p, 0)) rgba(255, 205, 90, 0.75);
+  transition: top 0.9s cubic-bezier(0.22, 0.61, 0.36, 1),
+    left 0.9s cubic-bezier(0.22, 0.61, 0.36, 1), box-shadow 0.9s ease;
+  z-index: 1;
+}
+
+.sunset .ground {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 30%;
+  z-index: 2;
+  background: linear-gradient(180deg, rgba(8, 18, 26, 0) 0%, rgba(8, 18, 26, 0.55) 45%, rgba(8, 18, 26, 0.92) 100%);
+}
+
+.sunset .caption {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.sunset .caption .lead {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.sunset .caption .sub {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.sunset .track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  z-index: 4;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sunset .track > span {
+  display: block;
+  height: 100%;
+  width: calc(var(--p, 0) * 100%);
+  background: var(--warning);
+  transition: width 0.9s ease;
+}
+
+/* Queue button appears only when every required field is in. */
+@keyframes queueIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.queue-reveal {
+  animation: queueIn 0.45s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sunset .warm,
+  .sunset .sun,
+  .sunset .track > span {
+    transition: none;
+  }
+  .queue-reveal {
+    animation: none;
+  }
+}
