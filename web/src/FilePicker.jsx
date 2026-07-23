@@ -276,6 +276,17 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
             <Alert severity={restartMsg.ok ? "success" : "error"}>{restartMsg.text}</Alert>
           )}
 
+          {roots.length === 0 && (
+            <Alert severity="info">
+              No browse locations are configured on the coordinator, so there's
+              nothing to list here. Paste or type the folder path into the field
+              instead — or add <code>browse_roots</code> to the coordinator config
+              (and set the admin token via ⚙ in the header if it requires one) to
+              turn Browse on.
+            </Alert>
+          )}
+
+          {roots.length > 0 && (
           <Box
             sx={{
               border: 1,
@@ -387,6 +398,7 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
               </Box>
             )}
           </Box>
+          )}
           {listing?.truncated && (
             <Alert severity="warning">Folder too large — showing the first entries only.</Alert>
           )}
@@ -409,9 +421,10 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
 
 // `hero` renders the Sunrise Yellow-on-Navy CTA variant (theme warning
 // color, matching the topbar strip) for the one field a form wants the
-// user to start from.
-function BrowseButton({ show, onClick, hero, label }) {
-  if (!show) return null;
+// user to start from. Always rendered — even when no browse roots are
+// configured — so the primary "pick a folder" action never silently
+// vanishes; the picker itself explains when there's nothing to browse.
+function BrowseButton({ onClick, hero, label }) {
   return (
     <Button
       variant={hero ? "contained" : "outlined"}
@@ -466,7 +479,7 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
           onChange={(e) => onChange(e.target.value)}
           onBlur={() => onChange(normalizePath(value))}
         />
-        <BrowseButton show={roots.length > 0} onClick={() => setOpen(true)} />
+        <BrowseButton onClick={() => setOpen(true)} />
       </Stack>
       {open && (
         <FilePicker
@@ -512,7 +525,6 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           onBlur={() => onChange(normalizeLines(value))}
         />
         <BrowseButton
-          show={roots.length > 0}
           onClick={() => setOpen(true)}
           hero={browseHero}
           label={browseLabel}
