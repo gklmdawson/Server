@@ -953,17 +953,36 @@ dialog.picker footer {
 
 .submit-sky .sun {
   position: absolute;
-  width: 132px;
-  height: 132px;
-  margin: -66px 0 0 -66px;
-  border-radius: 50%;
+  width: 172px;
+  height: 172px;
+  margin: -86px 0 0 -86px;
+  object-fit: contain;
   /* horizontal with --p (6% -> 94% of the viewport); vertical arcs up with --arc */
   left: calc(6% + 88% * var(--p, 0));
   top: calc(86% - 74% * var(--arc, 0));
-  background: radial-gradient(circle at 50% 45%, #fff7d4 0%, #ffe08a 45%, #f5b043 100%);
-  box-shadow: 0 0 110px 32px rgba(255, 210, 110, calc(0.32 + 0.4 * var(--arc, 0)));
+  /* Luminous core: shows through the logo's transparent centre and the gaps
+     between the arms so the sun glows from within instead of the sky showing
+     through as a dark eye. */
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(255, 240, 180, 0.88) 0%,
+    rgba(255, 214, 118, 0.44) 36%,
+    rgba(255, 190, 80, 0.14) 58%,
+    transparent 72%
+  );
+  /* Outer bloom hugging the swirl (transparent PNG), brightening toward noon. */
+  filter: drop-shadow(0 0 calc(5px + 10px * var(--arc, 0)) rgba(255, 216, 125, 0.95))
+    drop-shadow(0 0 calc(16px + 32px * var(--arc, 0)) rgba(255, 192, 84, 0.5));
+  transform-origin: 50% 50%;
+  animation: sunspin 80s linear infinite;
   transition: top 1s cubic-bezier(0.22, 0.61, 0.36, 1),
-    left 1s cubic-bezier(0.22, 0.61, 0.36, 1), box-shadow 1s ease;
+    left 1s cubic-bezier(0.22, 0.61, 0.36, 1), filter 1s ease;
+}
+
+@keyframes sunspin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .submit-sky .ground {
@@ -1064,6 +1083,9 @@ dialog.picker footer {
   .submit-sky .sun,
   .submit-sky .sunset-track > span {
     transition: none;
+  }
+  .submit-sky .sun {
+    animation: none;
   }
   .queue-reveal {
     animation: none;
