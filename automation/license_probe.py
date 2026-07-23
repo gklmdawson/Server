@@ -59,6 +59,11 @@ import re
 import sys
 import time
 
+# Declare STA before pywinauto is imported (it checks for this attribute when
+# comtypes is already loaded) — silences its 'Revert to STA COM threading
+# mode' warning without changing behavior.
+sys.coinit_flags = 2
+
 import comtypes.client
 
 comtypes.client.GetModule("UIAutomationCore.dll")
@@ -529,7 +534,8 @@ def main():
     ctypes.windll.shcore.SetProcessDpiAwareness(1)    # physical pixels, like AutomatePix4D
     win = _find_pix4d_window()
     band = _dialog_band(win)
-    print(f"Anchor 'Organizations and licenses' rect: {tuple(band.anchor)}")
+    a = band.anchor  # pywinauto RECT: attribute access only, it isn't iterable
+    print(f"Anchor 'Organizations and licenses' rect: ({a.left}, {a.top}, {a.right}, {a.bottom})")
 
     if args.hover:
         mode_hover(band)
