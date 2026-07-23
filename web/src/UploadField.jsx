@@ -1,4 +1,15 @@
 import { useRef, useState } from "react";
+import Box from "@mui/material/Box";
+import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import FormHelperText from "@mui/material/FormHelperText";
+import FormLabel from "@mui/material/FormLabel";
+import Stack from "@mui/material/Stack";
+import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutlined";
+import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
+import UploadFileIcon from "@mui/icons-material/UploadFile";
 
 // Drag-and-drop (or click) upload for the SMALL intake inputs — base data and
 // the targets csv — which the operator has locally. Unlike the path fields
@@ -17,6 +28,21 @@ function formatSize(bytes) {
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
 }
+
+// The dropzone: a dashed Paper-style target that lights up in the accent
+// color while a file is dragged over it.
+const dropSx = (over) => ({
+  border: "1.5px dashed",
+  borderColor: over ? "primary.main" : "divider",
+  borderRadius: 1,
+  px: 1.5,
+  py: 1.75,
+  textAlign: "center",
+  cursor: "pointer",
+  bgcolor: over ? "action.hover" : "background.paper",
+  transition: "border-color 0.12s, background-color 0.12s",
+  "&:hover": { borderColor: "primary.main" },
+});
 
 // items: [{ name, size, stored_path, error }]; uploader: async (File) => item.
 // itemNote: optional (item) => string, shown as an extra tag per uploaded file
@@ -69,12 +95,19 @@ export function UploadField({
   const remove = (i) => onItems(items.filter((_, idx) => idx !== i));
 
   return (
-    <div className="field">
-      <label>
-        {label} {hint && <span className="hint">{hint}</span>}
-      </label>
-      <div
-        className={`upload-drop ${over ? "drag-over" : ""}`}
+    <Stack spacing={0.5}>
+      <FormLabel required={required} sx={{ fontSize: 12, fontWeight: 600 }}>
+        {label}
+        {hint && (
+          <Typography component="span" variant="caption" sx={{ color: "text.disabled", ml: 0.5, fontWeight: 400 }}>
+            {hint}
+          </Typography>
+        )}
+      </FormLabel>
+      <Box
+        sx={dropSx(over)}
+        role="button"
+        tabIndex={0}
         onDragOver={(e) => {
           e.preventDefault();
           setOver(true);
@@ -82,8 +115,6 @@ export function UploadField({
         onDragLeave={() => setOver(false)}
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
-        role="button"
-        tabIndex={0}
       >
         <input
           ref={inputRef}
@@ -96,31 +127,46 @@ export function UploadField({
             e.target.value = "";
           }}
         />
-        <span className="upload-hint">
-          {busy ? "Uploading…" : `Drop ${multiple ? "file(s)" : "a file"} here or click to browse`}
-        </span>
-      </div>
-      {reject && <div className="drop-note">{reject}</div>}
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "center" }}>
+          {busy ? (
+            <CircularProgress size={16} />
+          ) : (
+            <UploadFileIcon fontSize="small" sx={{ color: "text.disabled" }} />
+          )}
+          <Typography variant="body2" sx={{ color: "text.disabled" }}>
+            {busy
+              ? "Uploading…"
+              : `Drop ${multiple ? "file(s)" : "a file"} here or click to browse`}
+          </Typography>
+        </Stack>
+      </Box>
+      {reject && <FormHelperText error>{reject}</FormHelperText>}
       {items.length > 0 && (
-        <ul className="upload-list">
-          {items.map((it, i) => (
-            <li key={i} className={it.error ? "upload-item err" : "upload-item"}>
-              <span className="upload-name">📄 {it.name}</span>
-              {it.error ? (
-                <span className="hint"> {it.error}</span>
-              ) : (
-                <span className="hint">
-                  {" "}
-                  {formatSize(it.size || 0)}
-                  {itemNote ? ` · ${itemNote(it)}` : ""}
-                </span>
-              )}
-              <button type="button" className="btn small" onClick={() => remove(i)}>
-                Remove
-              </button>
-            </li>
-          ))}
-        </ul>
+        <Stack direction="row" sx={{ flexWrap: "wrap", gap: 0.75, pt: 0.5 }}>
+          {items.map((it, i) =>
+            it.error ? (
+              <Tooltip key={i} title={it.error}>
+                <Chip
+                  size="small"
+                  color="error"
+                  variant="outlined"
+                  icon={<ErrorOutlineIcon />}
+                  label={`${it.name} — ${it.error}`}
+                  onDelete={() => remove(i)}
+                />
+              </Tooltip>
+            ) : (
+              <Chip
+                key={i}
+                size="small"
+                variant="outlined"
+                icon={<InsertDriveFileIcon />}
+                label={`${it.name} · ${formatSize(it.size || 0)}${itemNote ? ` · ${itemNote(it)}` : ""}`}
+                onDelete={() => remove(i)}
+              />
+            )
+          )}
+        </Stack>
       )}
       {required && items.length === 0 && (
         <input
@@ -132,6 +178,6 @@ export function UploadField({
           style={{ opacity: 0, height: 0, width: 0, position: "absolute" }}
         />
       )}
-    </div>
+    </Stack>
   );
 }

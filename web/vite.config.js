@@ -17,5 +17,14 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Split MUI/emotion into their own vendor chunk: it dwarfs our app
+        // code, changes far less often, and caches across app-only deploys.
+        manualChunks: {
+          mui: ["@mui/material", "@mui/icons-material", "@emotion/react", "@emotion/styled"],
+        },
+      },
+    },
   },
 });
