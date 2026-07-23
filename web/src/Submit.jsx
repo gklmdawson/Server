@@ -433,8 +433,9 @@ export default function Submit({ onSubmitted }) {
   };
 
   return (
-    <section className="card submit-card" style={{ "--p": p, "--arc": arc }}>
-      <SunsetProgress />
+    <>
+      <SunsetProgress p={p} arc={arc} />
+      <section className="submit-page">
       <h2>
         Submit a flight
         <span className="sun-status">{sunStatus}</span>
@@ -841,6 +842,7 @@ export default function Submit({ onSubmitted }) {
           )}
         </div>
       </form>
-    </section>
+      </section>
+    </>
   );
 }
