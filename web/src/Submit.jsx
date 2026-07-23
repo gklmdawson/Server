@@ -371,6 +371,16 @@ export default function Submit({ onSubmitted }) {
       ? missingLabels.join(", ")
       : `${missingLabels.slice(0, 3).join(", ")} +${missingLabels.length - 3} more`;
 
+  // Drives the page-wide sun: --p (fraction filled) moves it across and fills
+  // the bar; --arc (parabolic height) lifts it and fades the daytime sky in.
+  const p = requiredTotal ? filledCount / requiredTotal : 0;
+  const arc = 4 * p * (1 - p);
+  const sunStatus = allRequired
+    ? "Sunset — ready to queue"
+    : filledCount === 0
+    ? "Sunrise — pick your flight folder to begin"
+    : `${filledCount} of ${requiredTotal} details in`;
+
   const probeAlert = () => {
     if (probing) {
       return (
@@ -423,10 +433,13 @@ export default function Submit({ onSubmitted }) {
   };
 
   return (
-    <section className="card">
-      <h2>Submit a flight</h2>
+    <section className="card submit-card" style={{ "--p": p, "--arc": arc }}>
+      <SunsetProgress />
+      <h2>
+        Submit a flight
+        <span className="sun-status">{sunStatus}</span>
+      </h2>
       <form className="intake" onSubmit={submit}>
-        <SunsetProgress filled={filledCount} total={requiredTotal} />
         {/* The flight folder is the true starting point: probing it fills
             sensor/date/EPSG (and picks chain defaults) for everything below,
             so it leads the form and gets the brand-yellow hero CTA. */}

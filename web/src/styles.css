@@ -922,101 +922,119 @@ dialog.picker footer {
   }
 }
 
-/* ---- sun-arc progress (Submit form) ----
-   Two custom properties drive the scene: --p (0..1 = fraction of required
-   fields filled) moves the sun left->right and the progress bar; --arc (its
-   parabolic height, 0 at the horizons and 1 at the midpoint) moves the sun up
-   and fades the daytime sky in. Result: the sun rises bottom-left, arcs over
-   the top, and sets bottom-right as the form is completed. Colors are Sunrise
-   brand tokens — Cerulean day, Cedar/Yellow dawn & dusk. */
+/* ---- sun-arc background (whole Submit page) ----
+   The entire Submit card is a sky. Two custom properties set on .submit-card
+   drive it: --p (0..1 = fraction of required fields filled) moves the sun
+   left->right and fills the progress bar; --arc (its parabolic height, 0 at the
+   horizons and 1 at the midpoint) lifts the sun and fades the daytime sky in.
+   The sun rises bottom-left, arcs over the top, and sets bottom-right as the
+   form is completed. Form sections float above on frosted panels so they stay
+   readable while the sun glows behind them. Colors are Sunrise brand tokens —
+   Cerulean day, Cedar/Yellow dawn & dusk. */
 
-.sunset {
+.submit-card {
   position: relative;
-  height: 160px;
-  border-radius: 10px;
   overflow: hidden;
-  border: 1px solid var(--border);
   isolation: isolate;
-  user-select: none;
-  /* warm dawn/dusk base — always showing at the horizons (low sun) */
-  background: linear-gradient(180deg, #163a52 0%, #6b3f57 40%, #ca563c 72%, #ffd457 100%);
 }
 
-.sunset .day {
-  position: absolute;
-  inset: 0;
-  opacity: var(--arc, 0); /* bright daytime sky fades in as the sun climbs */
-  transition: opacity 0.9s ease;
-  background: linear-gradient(180deg, #0b3550 0%, #0077a8 55%, #86cceb 100%);
-}
-
-.sunset .sun {
-  position: absolute;
-  width: 52px;
-  height: 52px;
-  margin: -26px 0 0 -26px;
-  border-radius: 50%;
-  /* horizontal with --p (8% -> 92%); vertical arcs up with --arc (76% -> 8%) */
-  left: calc(8% + 84% * var(--p, 0));
-  top: calc(76% - 68% * var(--arc, 0));
-  background: radial-gradient(circle at 50% 42%, #fff6d0 0%, #ffdf7a 55%, #f2a63b 100%);
-  box-shadow: 0 0 calc(12px + 40px * var(--arc, 0)) rgba(255, 213, 110, 0.8);
-  transition: top 0.9s cubic-bezier(0.22, 0.61, 0.36, 1),
-    left 0.9s cubic-bezier(0.22, 0.61, 0.36, 1), box-shadow 0.9s ease;
+/* lift every direct child above the sky layer */
+.submit-card > *:not(.sunset-bg):not(.sunset-track) {
+  position: relative;
   z-index: 1;
 }
 
-.sunset .ground {
+.sunset-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  /* warm dawn/dusk base — shows at the horizons (low sun) */
+  background: linear-gradient(180deg, #163a52 0%, #3f4a63 28%, #6b3f57 52%, #ca563c 80%, #ffd457 100%);
+}
+
+.sunset-bg .day {
+  position: absolute;
+  inset: 0;
+  opacity: var(--arc, 0); /* bright daytime sky fades in as the sun climbs */
+  transition: opacity 1s ease;
+  background: linear-gradient(180deg, #0b3550 0%, #0f5f88 45%, #1f86b3 74%, #86cceb 100%);
+}
+
+.sunset-bg .sun {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  /* horizontal with --p (6% -> 94%); vertical arcs up with --arc (88% -> 8%) */
+  left: calc(6% + 88% * var(--p, 0));
+  top: calc(88% - 80% * var(--arc, 0));
+  background: radial-gradient(circle at 50% 45%, #fff7d4 0%, #ffe08a 45%, #f5b043 100%);
+  box-shadow: 0 0 90px 26px rgba(255, 210, 110, calc(0.3 + 0.4 * var(--arc, 0)));
+  transition: top 1s cubic-bezier(0.22, 0.61, 0.36, 1),
+    left 1s cubic-bezier(0.22, 0.61, 0.36, 1), box-shadow 1s ease;
+}
+
+.sunset-bg .ground {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  height: 30%;
-  z-index: 2;
-  background: linear-gradient(180deg, rgba(8, 18, 26, 0) 0%, rgba(8, 18, 26, 0.55) 45%, rgba(8, 18, 26, 0.92) 100%);
+  height: 20%;
+  background: linear-gradient(180deg, rgba(8, 18, 26, 0) 0%, rgba(8, 18, 26, 0.3) 60%, rgba(8, 18, 26, 0.55) 100%);
 }
 
-.sunset .caption {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 14px;
-  z-index: 3;
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+/* Frosted, readable panels floating on the sky. Scoped to the form's own
+   fieldsets (form > fieldset) so it never touches MUI's internal outline
+   fieldsets, which must stay transparent. */
+.submit-card form > fieldset {
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-color: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+/* Section legends straddle the panel's top edge (partly over open sky), so give
+   them a readable pill instead of letting text land on the gradient. */
+.submit-card form > fieldset > legend {
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border-radius: 5px;
+  padding: 1px 8px;
+}
+
+/* The section heading sits directly on the sky — keep it light + legible. */
+.submit-card > h2 {
   color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
 }
 
-.sunset .caption .lead {
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
+.sun-status {
+  margin-left: 10px;
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: rgba(255, 255, 255, 0.92);
 }
 
-.sunset .caption .sub {
-  font-size: 12.5px;
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.sunset .track {
+.sunset-track {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   height: 3px;
-  z-index: 4;
-  background: rgba(255, 255, 255, 0.18);
+  z-index: 2;
+  background: rgba(255, 255, 255, 0.2);
 }
 
-.sunset .track > span {
+.sunset-track > span {
   display: block;
   height: 100%;
   width: calc(var(--p, 0) * 100%);
   background: var(--warning);
-  transition: width 0.9s ease;
+  transition: width 1s ease;
 }
 
 /* Queue button appears only when every required field is in. */
@@ -1036,9 +1054,9 @@ dialog.picker footer {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sunset .day,
-  .sunset .sun,
-  .sunset .track > span {
+  .sunset-bg .day,
+  .sunset-bg .sun,
+  .sunset-track > span {
     transition: none;
   }
   .queue-reveal {
