@@ -83,6 +83,26 @@ curl -X POST http://127.0.0.1:8443/api/v1/jobs \
   -H "Content-Type: application/json" -d '{"job_type": "TERRA_PPK"}'
 ```
 
+### Full demo dataset (test every UI element)
+
+For a one-shot local playground with realistic content in every panel —
+machines in each state, jobs running/queued/failed/stalled/done, a sample
+NAS tree with real EXIF images (so Submit's folder Browse + auto-detect
+fire), and sample upload files — run the seeder, then point the coordinator
+at the config it writes:
+
+```bash
+python scripts/seed_demo.py                     # writes ./.devdata (gitignored)
+python -m coordinator.main --config .devdata/coordinator.yaml
+cd web && npm run dev                            # http://localhost:5173
+# optional: watch a job run live end-to-end
+python scripts/fake_agent.py --node DEMO-LIVE --capabilities MOCK
+```
+
+Sample files to drag into the Submit form live in `.devdata/samples/`
+(Trimble `.T04`, RINEX `.25o`, an all-points targets csv, a base ECEF csv).
+Re-run with `--reset` to wipe and regenerate.
+
 Without `web/dist` the coordinator falls back to a minimal built-in status
 page, so the PyInstaller EXE workflow still works without Node.
 
