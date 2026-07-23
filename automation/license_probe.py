@@ -539,13 +539,20 @@ def _row_selected_now(rect):
     return _ratio(img, _is_blue) > 0.2
 
 
-def select_available_license(win, product="PIX4Dmatic", apply=True):
-    """Ensure a `product` license with a seat is selected. Returns
-    'SELECTED', 'NO_SEATS', 'SCAN_FAILED', or 'CLICK_UNCONFIRMED' (see module
-    docstring for the CLI exit-code mapping). Importable from AutomatePix4D.
+def select_available_license(win, product="PIX4Dmatic", apply=True, needs_seat=None):
+    """Ensure a `product` license is selected. Returns 'SELECTED', 'NO_SEATS',
+    'SCAN_FAILED', or 'CLICK_UNCONFIRMED' (see module docstring for the CLI
+    exit-code mapping). Importable from AutomatePix4D.
+
+    needs_seat: require the row to show seats available. Default (None) means
+    auto — True for seat-pooled products, False for Discovery, which has no
+    seat line at all. Checking a seat back IN is just selecting Discovery:
+    select_available_license(win, product="Discovery").
 
     Click confirmation is the 'Apply' button materializing — the blue fill
     marks the ACTIVE license and does not move until Apply commits."""
+    if needs_seat is None:
+        needs_seat = product.lower() != "discovery"
     rows = read_license_rows(win)
     _emit(f"=== SELECT: rows read ({len(rows)}) ===")
     for row in rows:
@@ -567,7 +574,7 @@ def select_available_license(win, product="PIX4Dmatic", apply=True):
               "license (an active license holds its own seat, so 0/1 there is fine).")
         return "SELECTED"
 
-    candidates = [r for r in matic if (r.avail or 0) > 0]
+    candidates = [r for r in matic if (r.avail or 0) > 0] if needs_seat else matic
     if not candidates:
         unknown = [r.index for r in matic if r.avail is None]
         note = f" (row(s) {unknown} had unreadable seat counts)" if unknown else ""
@@ -758,7 +765,8 @@ def main():
     parser.add_argument("--select", action="store_true", help="click the available PIX4Dmatic license")
     parser.add_argument("--no-apply", action="store_true", help="with --select: don't click Apply")
     parser.add_argument("--close",  action="store_true", help="close the dialog via its X button")
-    parser.add_argument("--product", default="PIX4Dmatic", help="product to select (default PIX4Dmatic)")
+    parser.add_argument("--product", default="PIX4Dmatic",
+                        help="product to select (default PIX4Dmatic; 'Discovery' checks the seat back in)")
     parser.add_argument("--hover",  action="store_true", help="diagnostic: hit-test sweep")
     parser.add_argument("--dump",   action="store_true", help="diagnostic: raw UIA subtree dump")
     parser.add_argument("--pixels", action="store_true", help="diagnostic: color counts per slab")

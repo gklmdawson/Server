@@ -395,10 +395,7 @@ class Pix4DAutomation:
               license the way a blind click would.
         """
         license_probe.set_emitter(_logger.info)
-
-        self.win.child_window(title="S", control_type="CheckBox").click_input()
-        self.win.child_window(title="Organizations  licenses", control_type="MenuItem").click_input()
-        time.sleep(5)
+        self._open_license_dialog()
 
         status = license_probe.select_available_license(self.win)
         _logger.info(f"License selection: {status}")
@@ -415,6 +412,39 @@ class Pix4DAutomation:
         raise RuntimeError(
             f"License selection failed ({status}) — see the row readout above; "
             "run automation\\license_probe.py with the dialog open to diagnose.")
+
+    def _open_license_dialog(self):
+        """Open the Organizations & licenses dialog from the profile menu."""
+        self.win.child_window(title="S", control_type="CheckBox").click_input()
+        self.win.child_window(title="Organizations  licenses", control_type="MenuItem").click_input()
+        time.sleep(5)
+
+    def release_license(self):
+        """Check the PIX4Dmatic seat back in: switch the active license to the
+        free Discovery tier so other machines can take the seat. Runs in the
+        save-close phase after the save is confirmed. Best-effort — a failure
+        is logged but never blocks closing the app (worst case the seat stays
+        held, which is exactly what happened before this existed)."""
+        _logger.info("[save-close] Releasing the PIX4Dmatic seat (switching to Discovery)...")
+        license_probe.set_emitter(_logger.info)
+        try:
+            self._open_license_dialog()
+            status = license_probe.select_available_license(self.win, product="Discovery")
+            _logger.info(f"[save-close] License release: {status}")
+            # Downgrading to Discovery may pop a feature-limit confirmation
+            # after Apply — accept it so it can't block the close.
+            for title in ("Continue", "OK", "Yes"):
+                btn = self.win.child_window(title=title, control_type="Button")
+                if btn.exists(timeout=1):
+                    _logger.info(f"[save-close] Confirming license switch via '{title}'.")
+                    btn.click_input()
+                    time.sleep(0.5)
+                    break
+            license_probe.close_license_dialog(self.win)
+            return status == "SELECTED"
+        except Exception:
+            _logger.exception("[save-close] License release FAILED — closing anyway.")
+            return False
 
     def _reclaim_seat(self):
         """No PIX4Dmatic seats available anywhere: open the device manager and
@@ -658,7 +688,8 @@ class Pix4DAutomation:
     # The agent (processors/pix4dmatic.py) is what watches for completion (the
     # orthomosaic export landing on disk); once it sees that, it re-invokes this
     # exe with --save-close, which reuses the same window-focus + pywinauto
-    # connect the import flow uses to save the project and shut Pix4D down.
+    # connect the import flow uses to save the project, check the PIX4Dmatic
+    # seat back in (switch to Discovery), and shut Pix4D down.
 
     def connect(self):
         """Attach to an already-running PIX4Dmatic without launching a new one.
@@ -669,20 +700,29 @@ class Pix4DAutomation:
         self.win = _find_pix4d_window(timeout=10)
         _logger.info(f"[save-close] connect(): attached to PIX4Dmatic (HWND {self.win.handle}).")
 
-    def save_and_close(self, no_close: bool = False):
-        """--save-close entry point: focus the window, save the project, then
-        (unless no_close) close the app. Focus + connect are the 'core' bits
-        reused from the import flow (bring_to_front / _find_pix4d_window).
+    def save_and_close(self, no_close: bool = False, release: bool = True):
+        """--save-close entry point: focus the window, save the project, check
+        the license seat back in (switch to Discovery), then (unless no_close)
+        close the app. Focus + connect are the 'core' bits reused from the
+        import flow (bring_to_front / _find_pix4d_window).
         no_close=True (from --no-close) saves but leaves Pix4D open — handy for
-        running the save test repeatedly without reopening the project."""
+        running the save test repeatedly without reopening the project; the
+        license is left checked out in that mode so paid features keep working.
+        release=False (from --no-release) keeps the seat on close (old
+        behavior)."""
         _logger.info("[save-close] ===== SAVE + CLOSE START =====")
         self.bring_to_front()
         _logger.info("[save-close] window brought to front; saving project...")
         self.save_project()
         if no_close:
-            _logger.info("[save-close] --no-close set: leaving PIX4Dmatic open (save only).")
+            _logger.info("[save-close] --no-close set: leaving PIX4Dmatic open (save only, "
+                         "license kept checked out).")
             _logger.info("[save-close] ===== SAVE ONLY DONE =====")
             return
+        if release:
+            self.release_license()
+        else:
+            _logger.info("[save-close] --no-release set: keeping the PIX4Dmatic seat.")
         _logger.info("[save-close] closing PIX4Dmatic...")
         self.close_pix4d()
         _logger.info("[save-close] ===== SAVE + CLOSE DONE =====")
@@ -818,6 +858,9 @@ def main():
     parser.add_argument("--no-close",     action="store_true",
                         help="with --save-close: save the project but DON'T close "
                              "Pix4D — lets you re-run the save test without reopening it.")
+    parser.add_argument("--no-release",   action="store_true",
+                        help="with --save-close: keep the PIX4Dmatic seat instead of "
+                             "switching to Discovery before closing.")
     args = parser.parse_args()
 
     UNATTENDED = args.unattended
@@ -885,7 +928,7 @@ def main():
                      f"{' (leaving it open)' if args.no_close else ' and closing it'}.")
         try:
             automation.connect()
-            automation.save_and_close(no_close=args.no_close)
+            automation.save_and_close(no_close=args.no_close, release=not args.no_release)
             _logger.info("[save-close] finished OK.")
         except Exception:
             _logger.exception("[save-close] FAILED — see traceback above.")
