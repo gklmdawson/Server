@@ -61,14 +61,26 @@ history: [DESIGN.md](DESIGN.md)
 
 ```bash
 pip install -e ".[coordinator,agent,dev]"
-python -m coordinator.main            # http://127.0.0.1:8443
+printf 'require_agent_tokens: false\n' > config/dev.yaml   # fake agents auto-register
+python -m coordinator.main --config config/dev.yaml        # http://127.0.0.1:8443
 python scripts/fake_agent.py --node TERRA-01 --capabilities TERRA_PPK,TERRA_LIDAR
-pytest                                # 196 tests
+pytest                                # 211 tests
 
 # Web UI (only needed when changing it — production builds it in Docker):
 cd web && npm install
 npm run dev                           # http://localhost:5173, proxies /api
 npm run build                         # coordinator serves web/dist automatically
+```
+
+Without a config, `require_agent_tokens` defaults to true and
+`fake_agent.py` gets 401s — either use the dev config above or provision a
+real node token (DEPLOY.md §2.2). No admin token set = admin endpoints and
+the web submit form are open, which is what you want locally. To exercise
+the dashboard, enqueue a throwaway job the fake agent will pick up:
+
+```bash
+curl -X POST http://127.0.0.1:8443/api/v1/jobs \
+  -H "Content-Type: application/json" -d '{"job_type": "TERRA_PPK"}'
 ```
 
 Without `web/dist` the coordinator falls back to a minimal built-in status

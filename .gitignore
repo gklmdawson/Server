@@ -19,6 +19,9 @@ venv/
 # Per-machine agent config — real node token/paths, never the shared template
 /config/agent.yaml
 
+# Local dev coordinator config (README dev quickstart)
+/config/dev.yaml
+
 # Local scratch
 *.log
 
