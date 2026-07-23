@@ -1,5 +1,6 @@
 // Small shared pieces: status chips (label always present — color is never
 // the only signal), the single-hue progress meter, and formatting helpers.
+import Alert from "@mui/material/Alert";
 
 const STATUS_STYLE = {
   QUEUED: ["", "Queued"],
@@ -105,10 +106,10 @@ export function ErrorBanner({ error, prefix }) {
       ? " — set the admin token (⚙ in the header)"
       : "";
   return (
-    <div className="banner error">
+    <Alert severity="error" variant="outlined">
       {prefix ? `${prefix}: ` : ""}
       {error.message}
       {hint}
-    </div>
+    </Alert>
   );
 }

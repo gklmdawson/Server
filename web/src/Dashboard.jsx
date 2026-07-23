@@ -1,4 +1,10 @@
 import { useState } from "react";
+import Box from "@mui/material/Box";
+import Card from "@mui/material/Card";
+import CardContent from "@mui/material/CardContent";
+import Grid from "@mui/material/Grid";
+import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
 import { api } from "./api.js";
 import { usePoll } from "./usePoll.js";
 import {
@@ -9,6 +15,69 @@ import {
   shortId,
   timeAgo,
 } from "./ui.jsx";
+
+// MUI reference implementation (the Machines tab still uses the .node-grid
+// CSS — compare the two). Layout is MUI (Grid/Card/Stack, theme spacing
+// units); Sunrise presentation pieces (OnlineChip, Meter, .cap) are reused
+// as-is, which is the intended migration pattern: structure first, skins
+// only where MUI genuinely replaces something.
+function NodeCard({ node: n }) {
+  return (
+    <Card variant="outlined" sx={{ height: "100%" }}>
+      <CardContent sx={{ px: 1.75, py: 1.5, "&:last-child": { pb: 1.5 } }}>
+        <Stack spacing={1}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <Typography component="span" sx={{ fontSize: 15, fontWeight: 650 }}>
+              {n.node_name}
+            </Typography>
+            <OnlineChip node={n} />
+            <Box sx={{ flexGrow: 1 }} />
+            <Typography component="span" variant="body2" sx={{ color: "text.disabled", fontSize: 12 }}>
+              {timeAgo(n.last_sync_at)}
+            </Typography>
+          </Stack>
+          <Box>
+            {(n.capabilities.length ? n.capabilities : ["no capabilities"]).map(
+              (cap) => (
+                <span
+                  key={cap}
+                  className={`cap readonly ${
+                    n.effective_capabilities?.includes(cap) ? "" : "off"
+                  }`}
+                  title={
+                    n.effective_capabilities?.includes(cap)
+                      ? "assignable"
+                      : "turned off on the Machines tab"
+                  }
+                >
+                  {cap}
+                </span>
+              )
+            )}
+          </Box>
+          {n.active_job ? (
+            <Box>
+              <Box className="dim" sx={{ mb: 0.5 }}>
+                {n.active_job.job_type} · {n.active_job.project_name || "—"}
+              </Box>
+              <Meter percent={n.active_job.progress_percent} />
+              <Box className="faint" sx={{ mt: 0.5, fontSize: 12 }}>
+                {n.active_job.progress_message || "…"}
+              </Box>
+            </Box>
+          ) : (
+            <div className="faint">Idle</div>
+          )}
+          {(n.telemetry?.preflight || []).length > 0 && (
+            <Box className="faint" sx={{ fontSize: 12 }}>
+              ⏸ {n.telemetry.preflight.join("; ")}
+            </Box>
+          )}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
 
 function JobRow({ job, onOpenProject, children }) {
   return (
@@ -70,55 +139,13 @@ export default function Dashboard({ onOpenProject }) {
             appear here on its first sync.
           </div>
         )}
-        <div className="node-grid">
+        <Grid container spacing={1.5}>
           {data.nodes.map((n) => (
-            <div className="node-card" key={n.node_name}>
-              <header>
-                <span className="name">{n.node_name}</span>
-                <OnlineChip node={n} />
-                <span className="spacer" style={{ flex: 1 }} />
-                <span className="sub">{timeAgo(n.last_sync_at)}</span>
-              </header>
-              <div>
-                {(n.capabilities.length ? n.capabilities : ["no capabilities"]).map(
-                  (cap) => (
-                    <span
-                      key={cap}
-                      className={`cap readonly ${
-                        n.effective_capabilities?.includes(cap) ? "" : "off"
-                      }`}
-                      title={
-                        n.effective_capabilities?.includes(cap)
-                          ? "assignable"
-                          : "turned off on the Machines tab"
-                      }
-                    >
-                      {cap}
-                    </span>
-                  )
-                )}
-              </div>
-              {n.active_job ? (
-                <div>
-                  <div className="dim" style={{ marginBottom: 4 }}>
-                    {n.active_job.job_type} · {n.active_job.project_name || "—"}
-                  </div>
-                  <Meter percent={n.active_job.progress_percent} />
-                  <div className="faint" style={{ marginTop: 4, fontSize: 12 }}>
-                    {n.active_job.progress_message || "…"}
-                  </div>
-                </div>
-              ) : (
-                <div className="faint">Idle</div>
-              )}
-              {(n.telemetry?.preflight || []).length > 0 && (
-                <div className="faint" style={{ fontSize: 12 }}>
-                  ⏸ {n.telemetry.preflight.join("; ")}
-                </div>
-              )}
-            </div>
+            <Grid key={n.node_name} size={{ xs: 12, sm: 6, lg: 4 }}>
+              <NodeCard node={n} />
+            </Grid>
           ))}
-        </div>
+        </Grid>
       </section>
 
       {attention.length > 0 && (

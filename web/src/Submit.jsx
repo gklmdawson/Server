@@ -1,6 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
+import Autocomplete from "@mui/material/Autocomplete";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
+import Chip from "@mui/material/Chip";
+import CircularProgress from "@mui/material/CircularProgress";
+import Collapse from "@mui/material/Collapse";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import FormHelperText from "@mui/material/FormHelperText";
+import FormLabel from "@mui/material/FormLabel";
+import Grid from "@mui/material/Grid";
+import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
+import LinearProgress from "@mui/material/LinearProgress";
+import Stack from "@mui/material/Stack";
+import Step from "@mui/material/Step";
+import StepLabel from "@mui/material/StepLabel";
+import Stepper from "@mui/material/Stepper";
+import Switch from "@mui/material/Switch";
+import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
+import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
+import LockIcon from "@mui/icons-material/Lock";
 import { api } from "./api.js";
 import { PathInput, PathLines, normalizePath } from "./FilePicker.jsx";
+import { SunsetProgress } from "./SunsetProgress.jsx";
 import { UploadField } from "./UploadField.jsx";
 import { ErrorBanner } from "./ui.jsx";
 
@@ -33,18 +61,28 @@ function chainDefaults(sensor) {
   };
 }
 
-// Small padlock shown beside auto-filled fields; clicking it re-enables edits.
-function Unlock({ onClick }) {
+// Padlock adornment for auto-filled fields; clicking it re-enables edits.
+function UnlockAdornment({ onClick }) {
   return (
-    <button
-      type="button"
-      className="btn small unlock"
-      title="Auto-filled — click to unlock and edit"
-      aria-label="Unlock auto-filled field"
-      onClick={onClick}
-    >
-      🔒
-    </button>
+    <InputAdornment position="end">
+      <Tooltip title="Auto-filled — click to unlock and edit">
+        <IconButton size="small" edge="end" aria-label="Unlock auto-filled field" onClick={onClick}>
+          <LockIcon fontSize="inherit" />
+        </IconButton>
+      </Tooltip>
+    </InputAdornment>
+  );
+}
+
+// Standalone padlock for controls that can't host an adornment (the sensor
+// select's arrow occupies the end slot).
+function UnlockButton({ onClick }) {
+  return (
+    <Tooltip title="Auto-filled — click to unlock and edit">
+      <IconButton size="small" aria-label="Unlock auto-filled field" sx={{ mt: 0.75 }} onClick={onClick}>
+        <LockIcon fontSize="inherit" />
+      </IconButton>
+    </Tooltip>
   );
 }
 
@@ -279,22 +317,28 @@ export default function Submit({ onSubmitted }) {
     return (
       <section className="card">
         <h2>Submitted</h2>
-        <div className="banner ok" style={{ marginBottom: 10 }}>
-          Project <b>{result.name}</b> created with {result.jobs.length} job
-          {result.jobs.length === 1 ? "" : "s"}:{" "}
-          {result.jobs.map((j) => j.job_type).join(" → ")}
-        </div>
-        <div className="actions">
-          <button
-            className="btn primary"
-            onClick={() => onSubmitted(result.project_uuid)}
-          >
+        <Alert severity="success">
+          <AlertTitle>
+            Project <b>{result.name}</b> created with {result.jobs.length} job
+            {result.jobs.length === 1 ? "" : "s"}
+          </AlertTitle>
+          The chain runs left to right as each machine finishes its step.
+        </Alert>
+        <Stepper activeStep={-1} alternativeLabel sx={{ my: 2 }}>
+          {result.jobs.map((j, i) => (
+            <Step key={i}>
+              <StepLabel>{j.job_type}</StepLabel>
+            </Step>
+          ))}
+        </Stepper>
+        <Stack direction="row" spacing={1}>
+          <Button variant="contained" onClick={() => onSubmitted(result.project_uuid)}>
             Watch it on the project page
-          </button>
-          <button className="btn" onClick={() => setResult(null)}>
+          </Button>
+          <Button variant="outlined" onClick={() => setResult(null)}>
             Submit another
-          </button>
-        </div>
+          </Button>
+        </Stack>
       </section>
     );
   }
@@ -302,9 +346,100 @@ export default function Submit({ onSubmitted }) {
   const models = options.defaults?.classify_models || [];
   const showEcefInput = ecefManual || form.ecef.trim() !== "" || locked.ecef;
 
+  // Required fields drive both the sunset (how far the sun has risen/set) and
+  // whether the Queue button is shown. Each entry is one step of the sun's arc.
+  // Targets counts as satisfied when the "No targets" box is ticked, matching
+  // the flights that legitimately have none.
+  const requiredFields = [
+    { label: "Flight data", ok: form.sources.trim() !== "" },
+    { label: "Client", ok: form.client.trim() !== "" },
+    { label: "Project", ok: form.project.trim() !== "" },
+    { label: "Flight date", ok: form.date.trim() !== "" },
+    { label: "Sensor", ok: form.sensor_type !== "" },
+    { label: "Projects root", ok: form.root_path.trim() !== "" },
+    { label: "Base station", ok: storedBase.length > 0 },
+    { label: "Targets", ok: gcpUpload.some((u) => u.stored_path) || form.no_targets },
+    { label: "EPSG horizontal", ok: form.epsg_h.trim() !== "" },
+    { label: "EPSG vertical", ok: form.epsg_v.trim() !== "" },
+  ];
+  const requiredTotal = requiredFields.length;
+  const filledCount = requiredFields.filter((f) => f.ok).length;
+  const allRequired = filledCount === requiredTotal;
+  const missingLabels = requiredFields.filter((f) => !f.ok).map((f) => f.label);
+  const missingHint =
+    missingLabels.length <= 3
+      ? missingLabels.join(", ")
+      : `${missingLabels.slice(0, 3).join(", ")} +${missingLabels.length - 3} more`;
+
+  // Drives the page-wide sun: --p (fraction filled) moves it across and fills
+  // the bar; --arc (parabolic height) lifts it and fades the daytime sky in.
+  const p = requiredTotal ? filledCount / requiredTotal : 0;
+  const arc = 4 * p * (1 - p);
+  const sunStatus = allRequired
+    ? "Sunset — ready to queue"
+    : filledCount === 0
+    ? "Sunrise — pick your flight folder to begin"
+    : `${filledCount} of ${requiredTotal} details in`;
+
+  const probeAlert = () => {
+    if (probing) {
+      return (
+        <Alert severity="info" icon={<CircularProgress size={18} />}>
+          Reading flight images on the NAS…
+          <LinearProgress sx={{ mt: 1 }} />
+        </Alert>
+      );
+    }
+    if (probeInfo?.error) {
+      return <Alert severity="warning">Auto-detect unavailable: {probeInfo.error}</Alert>;
+    }
+    if (!probeInfo) return null;
+    return (
+      <Alert
+        severity="success"
+        action={
+          <Button color="inherit" size="small" loading={rtkBusy} onClick={checkRtk}>
+            {rtkBusy ? "Scanning…" : "Check RTK coverage"}
+          </Button>
+        }
+      >
+        Auto-detected <b>{probeInfo.sensor || "unknown sensor"}</b>
+        {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
+        {probeInfo.date ? `, ${probeInfo.date}` : ""}
+        {probeInfo.epsg_h
+          ? `, EPSG ${probeInfo.epsg_h}${
+              epsgName(probeInfo.epsg_h) ? ` (${epsgName(probeInfo.epsg_h)})` : ""
+            }/${probeInfo.epsg_v || "?"}${
+              epsgName(probeInfo.epsg_v) ? ` (${epsgName(probeInfo.epsg_v)})` : ""
+            }`
+          : ", no EPSG (enter manually)"}{" "}
+        from {probeInfo.image_count || 0} image
+        {probeInfo.image_count === 1 ? "" : "s"}. Auto-filled fields are locked — click the
+        padlock to edit.
+        {rtk && !rtk.error && rtk.fixed_pct != null && (
+          <Chip
+            size="small"
+            sx={{ ml: 1 }}
+            label={`RTK fixed on ${rtk.fixed_pct.toFixed(0)}% of ${rtk.total_photos} photos`}
+          />
+        )}
+        {rtk?.error && (
+          <Typography component="span" variant="caption" sx={{ ml: 1 }}>
+            RTK scan: {rtk.error}
+          </Typography>
+        )}
+      </Alert>
+    );
+  };
+
   return (
-    <section className="card">
-      <h2>Submit a flight</h2>
+    <>
+      <SunsetProgress p={p} arc={arc} />
+      <section className="submit-page">
+      <h2>
+        Submit a flight
+        <span className="sun-status">{sunStatus}</span>
+      </h2>
       <form className="intake" onSubmit={submit}>
         {/* The flight folder is the true starting point: probing it fills
             sensor/date/EPSG (and picks chain defaults) for everything below,
@@ -313,8 +448,9 @@ export default function Submit({ onSubmitted }) {
           <legend>1 · Flight data — start here</legend>
           <PathLines
             label="Source folder(s) — one per line"
-            hint="the flight data on the share/card; picking one auto-fills sensor, date & EPSG below"
+            hint="use Pick flight folder(s) or drop a path here — picking one auto-fills sensor, date & EPSG below"
             required
+            readOnly
             value={form.sources}
             onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
             roots={browseRoots}
@@ -324,90 +460,64 @@ export default function Submit({ onSubmitted }) {
             browseHero
             browseLabel="📂 Pick flight folder(s)…"
           />
-          {(probing || probeInfo) && (
-            <div className={`banner ${probeInfo?.error ? "error" : "ok"} probe-banner`}>
-              {probing && "Reading flight images on the NAS…"}
-              {probeInfo?.error && `Auto-detect unavailable: ${probeInfo.error}`}
-              {probeInfo && !probeInfo.error && (
-                <>
-                  Auto-detected{" "}
-                  <b>{probeInfo.sensor || "unknown sensor"}</b>
-                  {probeInfo.exif_model ? ` (${probeInfo.exif_model})` : ""}
-                  {probeInfo.date ? `, ${probeInfo.date}` : ""}
-                  {probeInfo.epsg_h
-                    ? `, EPSG ${probeInfo.epsg_h}${
-                        epsgName(probeInfo.epsg_h) ? ` (${epsgName(probeInfo.epsg_h)})` : ""
-                      }/${probeInfo.epsg_v || "?"}${
-                        epsgName(probeInfo.epsg_v) ? ` (${epsgName(probeInfo.epsg_v)})` : ""
-                      }`
-                    : ", no EPSG (enter manually)"}{" "}
-                  from {probeInfo.image_count || 0} image
-                  {probeInfo.image_count === 1 ? "" : "s"}. Auto-filled fields are
-                  locked — click 🔒 to edit.
-                  {"  "}
-                  <button
-                    type="button"
-                    className="btn small"
-                    disabled={rtkBusy}
-                    onClick={checkRtk}
-                  >
-                    {rtkBusy ? "Scanning…" : "Check RTK coverage"}
-                  </button>
-                  {rtk && !rtk.error && rtk.fixed_pct != null && (
-                    <span className="hint">
-                      {" "}
-                      RTK fixed on {rtk.fixed_pct.toFixed(0)}% of {rtk.total_photos} photos
-                    </span>
-                  )}
-                  {rtk?.error && <span className="hint"> RTK scan: {rtk.error}</span>}
-                </>
-              )}
-            </div>
-          )}
+          <Collapse in={probing || !!probeInfo}>{probeAlert()}</Collapse>
         </fieldset>
 
         <fieldset>
           <legend>2 · Project</legend>
-          <div className="row3">
-            <div className="field">
-              <label>Client</label>
-              <input type="text" required value={form.client} onChange={set("client")} />
-            </div>
-            <div className="field">
-              <label>Project</label>
-              <input type="text" required value={form.project} onChange={set("project")} />
-            </div>
-            <div className="field">
-              <label>
-                Flight date <span className="hint">ddMonYYYY</span>
-              </label>
-              <div className="lock-row">
-                <input
-                  type="text"
-                  required
-                  pattern="\d{2}[A-Za-z]{3}\d{4}"
-                  placeholder="e.g. 10Jul2026"
-                  value={form.date}
-                  readOnly={!!locked.date}
-                  className={locked.date ? "locked" : ""}
-                  onChange={set("date")}
-                />
-                {locked.date && <Unlock onClick={() => unlock("date")} />}
-              </div>
-            </div>
-          </div>
-          <div className="row">
-            <div className="field">
-              <label>
-                Sensor <span className="hint">auto-detected from the source folder</span>
-              </label>
-              <div className="lock-row">
-                <select
+          <Grid container spacing={1.5}>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Client"
+                required
+                value={form.client}
+                onChange={set("client")}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Project"
+                required
+                value={form.project}
+                onChange={set("project")}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Flight date"
+                helperText="ddMonYYYY"
+                required
+                placeholder="e.g. 10Jul2026"
+                value={form.date}
+                onChange={set("date")}
+                slotProps={{
+                  htmlInput: { pattern: "\\d{2}[A-Za-z]{3}\\d{4}" },
+                  input: {
+                    readOnly: !!locked.date,
+                    endAdornment: locked.date && <UnlockAdornment onClick={() => unlock("date")} />,
+                  },
+                }}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <Stack direction="row" spacing={0.5} sx={{ alignItems: "flex-start" }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  select
+                  label="Sensor"
+                  helperText="auto-detected from the source folder"
                   required
                   value={form.sensor_type}
                   onChange={setSensor}
                   disabled={!!locked.sensor_type}
-                  className={locked.sensor_type ? "locked" : ""}
+                  slotProps={{ select: { native: true }, inputLabel: { shrink: true } }}
                 >
                   <option value="">— select sensor —</option>
                   {(options.sensors.length
@@ -416,19 +526,27 @@ export default function Submit({ onSubmitted }) {
                   ).map((s) => (
                     <option key={s}>{s}</option>
                   ))}
-                </select>
-                {locked.sensor_type && <Unlock onClick={() => unlock("sensor_type")} />}
-              </div>
-            </div>
-            <div className="field">
-              <label>Priority</label>
-              <select value={form.priority} onChange={set("priority")}>
-                <option value="100">Normal</option>
-                <option value="200">High</option>
-                <option value="300">Rush</option>
-              </select>
-            </div>
-          </div>
+                </TextField>
+                {locked.sensor_type && <UnlockButton onClick={() => unlock("sensor_type")} />}
+              </Stack>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <Stack spacing={0.5}>
+                <FormLabel sx={{ fontSize: 12, fontWeight: 600 }}>Priority</FormLabel>
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  color="primary"
+                  value={form.priority}
+                  onChange={(e, v) => v != null && setForm((f) => ({ ...f, priority: v }))}
+                >
+                  <ToggleButton value="100">Normal</ToggleButton>
+                  <ToggleButton value="200">High</ToggleButton>
+                  <ToggleButton value="300">Rush</ToggleButton>
+                </ToggleButtonGroup>
+              </Stack>
+            </Grid>
+          </Grid>
           <PathInput
             label="Projects root"
             hint="the storage share, e.g. \\192.168.35.25\3dData"
@@ -453,16 +571,15 @@ export default function Submit({ onSubmitted }) {
             itemNote={(it) => (isTrimble(it.name) ? "Trimble" : "RINEX")}
           />
           {storedBase.length > 0 && (
-            <div className="tlt-note">
+            <Alert severity={baseMixed ? "warning" : "info"} sx={{ py: 0 }}>
               {baseMixed
                 ? "Mixed Trimble + RINEX files — treated as Trimble; conversion will run on all of them."
                 : baseIsRinex
                 ? "RINEX base data detected — Trimble conversion is skipped; companion files are collected."
                 : "Trimble base data detected — it will be converted to RINEX."}
-            </div>
+            </Alert>
           )}
-          <div
-            className={`field ecef-drop ${ecefOver ? "drag-over" : ""}`}
+          <Box
             onDragOver={(e) => {
               e.preventDefault();
               setEcefOver(true);
@@ -474,12 +591,6 @@ export default function Submit({ onSubmitted }) {
               if (e.dataTransfer.files?.length) takeEcefFile(e.dataTransfer.files[0]);
             }}
           >
-            <label>
-              Corrected base position — ECEF X, Y, Z{" "}
-              <span className="hint">
-                optional; metres, from a Point ID,X,Y,Z csv or typed
-              </span>
-            </label>
             <input
               ref={ecefFileRef}
               type="file"
@@ -491,88 +602,130 @@ export default function Submit({ onSubmitted }) {
               }}
             />
             {showEcefInput ? (
-              <div className="ecef-input-row lock-row">
-                <input
-                  type="text"
-                  placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
-                  value={form.ecef}
-                  readOnly={!!locked.ecef}
-                  className={locked.ecef ? "locked" : ""}
-                  onChange={set("ecef")}
-                />
-                {locked.ecef ? (
-                  <Unlock
-                    onClick={() => {
-                      unlock("ecef");
-                      setEcefManual(true);
-                    }}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="btn small"
-                    disabled={ecefBusy}
-                    onClick={() => ecefFileRef.current?.click()}
-                  >
-                    Browse…
-                  </button>
-                )}
-              </div>
+              <TextField
+                fullWidth
+                size="small"
+                label="Corrected base position — ECEF X, Y, Z"
+                placeholder="e.g. -1878522.21, -4599428.34, 4001432.17"
+                helperText={ecefErr || "optional; metres, from a Point ID,X,Y,Z csv or typed"}
+                error={!!ecefErr}
+                value={form.ecef}
+                onChange={set("ecef")}
+                slotProps={{
+                  input: {
+                    readOnly: !!locked.ecef,
+                    endAdornment: (
+                      <InputAdornment position="end">
+                        {ecefBusy && <CircularProgress size={16} sx={{ mr: 1 }} />}
+                        {locked.ecef ? (
+                          <UnlockAdornment
+                            onClick={() => {
+                              unlock("ecef");
+                              setEcefManual(true);
+                            }}
+                          />
+                        ) : (
+                          <Button
+                            size="small"
+                            disabled={ecefBusy}
+                            onClick={() => ecefFileRef.current?.click()}
+                          >
+                            Browse…
+                          </Button>
+                        )}
+                      </InputAdornment>
+                    ),
+                  },
+                }}
+              />
             ) : (
-              <div
-                className="upload-drop ecef-zone"
-                onClick={() => ecefFileRef.current?.click()}
-                role="button"
-                tabIndex={0}
-              >
-                <span className="upload-hint">
-                  {ecefBusy
-                    ? "Parsing ECEF csv…"
-                    : "Drop a Point ID,X,Y,Z csv here or click to browse"}
-                </span>
-                <button
-                  type="button"
-                  className="btn small"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setEcefManual(true);
+              <Stack spacing={0.5}>
+                <FormLabel sx={{ fontSize: 12, fontWeight: 600 }}>
+                  Corrected base position — ECEF X, Y, Z{" "}
+                  <Typography component="span" variant="caption" sx={{ color: "text.disabled", fontWeight: 400 }}>
+                    optional; metres, from a Point ID,X,Y,Z csv or typed
+                  </Typography>
+                </FormLabel>
+                <Box
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => ecefFileRef.current?.click()}
+                  sx={{
+                    border: "1.5px dashed",
+                    borderColor: ecefOver ? "primary.main" : "divider",
+                    borderRadius: 1,
+                    px: 1.5,
+                    py: 1.75,
+                    textAlign: "center",
+                    cursor: "pointer",
+                    bgcolor: ecefOver ? "action.hover" : "background.paper",
+                    "&:hover": { borderColor: "primary.main" },
                   }}
                 >
-                  Type it manually
-                </button>
-              </div>
+                  <Stack spacing={1} sx={{ alignItems: "center" }}>
+                    <Typography variant="body2" sx={{ color: "text.disabled" }}>
+                      {ecefBusy
+                        ? "Parsing ECEF csv…"
+                        : "Drop a Point ID,X,Y,Z csv here or click to browse"}
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEcefManual(true);
+                      }}
+                    >
+                      Type it manually
+                    </Button>
+                  </Stack>
+                </Box>
+                {ecefErr && <FormHelperText error>{ecefErr}</FormHelperText>}
+              </Stack>
             )}
-            {ecefBusy && showEcefInput && <div className="drop-note">Parsing ECEF csv…</div>}
-            {ecefErr && <div className="drop-note">{ecefErr}</div>}
-          </div>
+          </Box>
         </fieldset>
 
         <fieldset>
           <legend>4 · Processing</legend>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.run_photo_chain}
-              onChange={set("run_photo_chain")}
+          <Stack spacing={0}>
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={form.run_photo_chain}
+                  onChange={set("run_photo_chain")}
+                />
+              }
+              label={
+                <span>
+                  Photo chain <span className="why">Terra PPK → Pix4Dmatic</span>
+                </span>
+              }
             />
-            <span>
-              Photo chain <span className="why">Terra PPK → Pix4Dmatic</span>
-            </span>
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              disabled={!isLidar}
-              checked={isLidar && form.run_lidar_chain}
-              onChange={set("run_lidar_chain")}
-            />
-            <span>
-              LiDAR chain{" "}
-              <span className="why">
-                Terra reconstruction → Cyclone 3DR classification (L2/L3 only)
+            <Tooltip title={isLidar ? "" : "LiDAR chain requires an L2/L3 sensor"} placement="bottom-start">
+              <span>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      size="small"
+                      disabled={!isLidar}
+                      checked={isLidar && form.run_lidar_chain}
+                      onChange={set("run_lidar_chain")}
+                    />
+                  }
+                  label={
+                    <span>
+                      LiDAR chain{" "}
+                      <span className="why">
+                        Terra reconstruction → Cyclone 3DR classification (L2/L3 only)
+                      </span>
+                    </span>
+                  }
+                />
               </span>
-            </span>
-          </label>
+            </Tooltip>
+          </Stack>
 
           <div>
             <UploadField
@@ -584,7 +737,11 @@ export default function Submit({ onSubmitted }) {
               onItems={onGcpItems}
             />
             {tltInfo && (
-              <div className={`tlt-note ${tltInfo.error ? "tlt-err" : ""}`}>
+              <Alert
+                severity={tltInfo.error ? "error" : "info"}
+                icon={tltInfo.busy ? <CircularProgress size={18} /> : undefined}
+                sx={{ py: 0, mt: 0.5 }}
+              >
                 {tltInfo.busy && "Reading targets csv…"}
                 {tltInfo.error && `Targets csv: ${tltInfo.error}`}
                 {tltInfo.tlt_count != null &&
@@ -592,82 +749,101 @@ export default function Submit({ onSubmitted }) {
                     `${tltInfo.tlt_count} TLT → SINGLE_TLT.csv (LiDAR), ` +
                     `${tltInfo.tat_count} TAT+TLT → TAT.csv (Pix4D). ` +
                     "Both saved to the project folder at intake."}
-              </div>
+              </Alert>
             )}
           </div>
 
-          <div className="row">
-            <div className="field">
-              <label>EPSG horizontal</label>
-              <div className="lock-row">
-                <input
-                  type="text"
-                  value={form.epsg_h}
-                  readOnly={!!locked.epsg_h}
-                  className={locked.epsg_h ? "locked" : ""}
-                  onChange={set("epsg_h")}
-                />
-                {locked.epsg_h && <Unlock onClick={() => unlock("epsg_h")} />}
-              </div>
-              {epsgName(form.epsg_h) && (
-                <span className="hint epsg-name">{epsgName(form.epsg_h)}</span>
-              )}
-            </div>
-            <div className="field">
-              <label>EPSG vertical</label>
-              <div className="lock-row">
-                <input
-                  type="text"
-                  value={form.epsg_v}
-                  readOnly={!!locked.epsg_v}
-                  className={locked.epsg_v ? "locked" : ""}
-                  onChange={set("epsg_v")}
-                />
-                {locked.epsg_v && <Unlock onClick={() => unlock("epsg_v")} />}
-              </div>
-              {epsgName(form.epsg_v) && (
-                <span className="hint epsg-name">{epsgName(form.epsg_v)}</span>
-              )}
-            </div>
-          </div>
+          <Grid container spacing={1.5}>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="EPSG horizontal"
+                helperText={epsgName(form.epsg_h) || " "}
+                value={form.epsg_h}
+                onChange={set("epsg_h")}
+                slotProps={{
+                  input: {
+                    readOnly: !!locked.epsg_h,
+                    endAdornment: locked.epsg_h && (
+                      <UnlockAdornment onClick={() => unlock("epsg_h")} />
+                    ),
+                  },
+                }}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField
+                fullWidth
+                size="small"
+                label="EPSG vertical"
+                helperText={epsgName(form.epsg_v) || " "}
+                value={form.epsg_v}
+                onChange={set("epsg_v")}
+                slotProps={{
+                  input: {
+                    readOnly: !!locked.epsg_v,
+                    endAdornment: locked.epsg_v && (
+                      <UnlockAdornment onClick={() => unlock("epsg_v")} />
+                    ),
+                  },
+                }}
+              />
+            </Grid>
+          </Grid>
 
           {isLidar && form.run_lidar_chain && (
-            <div className="row">
-              <div className="field">
-                <label>
-                  3DR classification model{" "}
-                  <span className="hint">defaults to skip</span>
-                </label>
-                {models.length > 0 ? (
-                  <select value={form.classify_model} onChange={set("classify_model")}>
-                    <option value="">— skip classification —</option>
-                    {models.map((m) => (
-                      <option key={m}>{m}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={form.classify_model}
-                    onChange={set("classify_model")}
-                  />
-                )}
-              </div>
-              <label className="check" style={{ alignSelf: "end" }}>
-                <input type="checkbox" checked={form.no_targets} onChange={set("no_targets")} />
-                <span>No targets</span>
-              </label>
-            </div>
+            <Grid container spacing={1.5}>
+              <Grid size={{ xs: 12, sm: 6 }}>
+                <Autocomplete
+                  freeSolo
+                  size="small"
+                  options={models}
+                  inputValue={form.classify_model}
+                  onInputChange={(e, v) => setForm((f) => ({ ...f, classify_model: v }))}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="3DR classification model"
+                      helperText="blank = skip classification (the default)"
+                    />
+                  )}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6 }} sx={{ alignSelf: "center" }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={form.no_targets}
+                      onChange={set("no_targets")}
+                    />
+                  }
+                  label="No targets"
+                />
+              </Grid>
+            </Grid>
           )}
         </fieldset>
 
         <ErrorBanner error={error} prefix="Submission rejected" />
         <div>
-          <button className="btn primary" disabled={busy} type="submit">
-            {busy ? "Submitting…" : "Queue it"}
-          </button>
+          {allRequired ? (
+            <Button
+              className="queue-reveal"
+              variant="contained"
+              size="large"
+              type="submit"
+              loading={busy}
+            >
+              Queue it
+            </Button>
+          ) : (
+            <Chip variant="outlined" label={`Still needed to queue: ${missingHint}`} />
+          )}
         </div>
       </form>
-    </section>
+      </section>
+    </>
   );
 }

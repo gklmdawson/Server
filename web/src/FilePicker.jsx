@@ -1,4 +1,29 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Breadcrumbs from "@mui/material/Breadcrumbs";
+import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
+import Link from "@mui/material/Link";
+import List from "@mui/material/List";
+import ListItemButton from "@mui/material/ListItemButton";
+import ListItemIcon from "@mui/material/ListItemIcon";
+import ListItemText from "@mui/material/ListItemText";
+import Skeleton from "@mui/material/Skeleton";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
+import Typography from "@mui/material/Typography";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import EjectIcon from "@mui/icons-material/Eject";
+import FolderIcon from "@mui/icons-material/Folder";
+import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import { api } from "./api.js";
 import { useContainerRestart } from "./useContainerRestart.js";
 
@@ -97,7 +122,6 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   const [reloadKey, setReloadKey] = useState(0);
   const [ejecting, setEjecting] = useState("");   // device name in flight
   const [ejectMsg, setEjectMsg] = useState(null); // {ok, text}
-  const dialogRef = useRef(null);
   const {
     restarting,
     message: restartMsg,
@@ -106,10 +130,6 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
 
   const rootIsEjectable = !!roots.find((r) => r.label === rootLabel)?.ejectable;
   const rootIsRestartable = !!roots.find((r) => r.label === rootLabel)?.restartable;
-
-  useEffect(() => {
-    dialogRef.current?.showModal();
-  }, []);
 
   useEffect(() => {
     if (!rootLabel) return;
@@ -176,202 +196,267 @@ export function FilePicker({ roots, mode, exts, multi, title, onPick, onPickMeta
   // (the "second card isn't appearing" case) so it's never duplicated.
   const topLevelEmpty = !!listing && visible.length === 0 && listing.parent === null;
 
-  return (
-    <dialog className="picker" ref={dialogRef} onClose={onClose}>
-      <header>
-        <b>{title}</b>
-        {exts?.length > 0 && mode === "file" && (
-          <span className="hint"> {exts.join(" / ")} only</span>
-        )}
-        <span style={{ flex: 1 }} />
-        <button type="button" className="btn small" onClick={onClose}>
-          Close
-        </button>
-      </header>
+  const rescanButton = (
+    <Button
+      size="small"
+      variant="outlined"
+      startIcon={<RefreshIcon />}
+      loading={restarting}
+      loadingPosition="start"
+      disabled={!!ejecting}
+      title="Restart the NAS containers so a freshly plugged card shows up"
+      onClick={restart}
+    >
+      {restarting ? "Restarting… (waiting for the server)" : "Rescan cards"}
+    </Button>
+  );
 
-      {roots.length > 1 && (
-        <div className="picker-roots">
-          {roots.map((r) => (
-            <button
-              key={r.label}
-              type="button"
-              className={`btn small ${r.label === rootLabel ? "primary" : ""}`}
-              onClick={() => {
-                setRootLabel(r.label);
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle sx={{ pb: 1 }}>
+        {title}
+        {exts?.length > 0 && mode === "file" && (
+          <Typography component="span" variant="body2" sx={{ color: "text.disabled", ml: 1 }}>
+            {exts.join(" / ")} only
+          </Typography>
+        )}
+      </DialogTitle>
+      <DialogContent sx={{ pb: 1 }}>
+        <Stack spacing={1}>
+          {roots.length > 1 && (
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              color="primary"
+              value={rootLabel}
+              onChange={(e, v) => {
+                if (v == null) return;
+                setRootLabel(v);
                 setPath("");
               }}
             >
-              {r.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {rootLabel && (
-        <div className="picker-crumbs">
-          <button type="button" onClick={() => setPath("")}>
-            {roots.find((r) => r.label === rootLabel)?.label || rootLabel}
-          </button>
-          {crumbs.map((part, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => setPath(crumbs.slice(0, i + 1).join("/"))}
-            >
-              {part}
-            </button>
-          ))}
-          {rootIsRestartable && !topLevelEmpty && (
-            <span style={{ flex: 1, textAlign: "right" }}>
-              <button
-                type="button"
-                className="btn small"
-                title="Restart the NAS containers so a freshly plugged card shows up"
-                disabled={restarting || !!ejecting}
-                onClick={restart}
-              >
-                {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
-              </button>
-            </span>
+              {roots.map((r) => (
+                <ToggleButton key={r.label} value={r.label}>
+                  {r.label}
+                </ToggleButton>
+              ))}
+            </ToggleButtonGroup>
           )}
-        </div>
-      )}
 
-      {ejectMsg && (
-        <div className={`banner ${ejectMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
-          {ejectMsg.text}
-        </div>
-      )}
-      {restartMsg && (
-        <div className={`banner ${restartMsg.ok ? "ok" : "error"}`} style={{ marginBottom: 8 }}>
-          {restartMsg.text}
-        </div>
-      )}
+          {rootLabel && (
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <Breadcrumbs sx={{ flex: 1, minWidth: 0 }} itemsAfterCollapse={2}>
+                <Link component="button" type="button" underline="hover" onClick={() => setPath("")}>
+                  {roots.find((r) => r.label === rootLabel)?.label || rootLabel}
+                </Link>
+                {crumbs.map((part, i) =>
+                  i === crumbs.length - 1 ? (
+                    <Typography key={i} sx={{ color: "text.primary" }}>{part}</Typography>
+                  ) : (
+                    <Link
+                      key={i}
+                      component="button"
+                      type="button"
+                      underline="hover"
+                      onClick={() => setPath(crumbs.slice(0, i + 1).join("/"))}
+                    >
+                      {part}
+                    </Link>
+                  )
+                )}
+              </Breadcrumbs>
+              {rootIsRestartable && !topLevelEmpty && rescanButton}
+            </Stack>
+          )}
 
-      <div className="picker-list">
-        {!rootLabel && <div className="empty">Pick a location above.</div>}
-        {error && <div className="banner error">{error.message}</div>}
-        {rootLabel && !listing && !error && <div className="empty">Loading…</div>}
-        {listing && listing.parent !== null && (
-          <div className="picker-row" onClick={() => setPath(listing.parent)}>
-            <span className="picker-icon">↩</span>
-            <span>..</span>
-          </div>
-        )}
-        {listing &&
-          visible.map((entry) => (
-            <div
-              key={entry.name}
-              className={`picker-row ${selected.has(entry.name) ? "selected" : ""}`}
-              onClick={() =>
-                selectable(entry) ? toggle(entry.name) : entry.dir && enter(entry.name)
-              }
-            >
-              {selectable(entry) && (
-                <input
-                  type="checkbox"
-                  checked={selected.has(entry.name)}
-                  onChange={() => toggle(entry.name)}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              )}
-              <span className="picker-icon">{entry.dir ? "📁" : "📄"}</span>
-              <span className="picker-name">{entry.name}</span>
-              {rootIsEjectable && path === "" && entry.dir && (
-                <button
-                  type="button"
-                  className="btn small"
-                  title="Safely unmount this card on the NAS"
-                  disabled={!!ejecting}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    ejectDevice(entry.name);
-                  }}
-                >
-                  {ejecting === entry.name ? "Ejecting…" : "⏏ Eject"}
-                </button>
-              )}
-              {entry.dir ? (
-                <button
-                  type="button"
-                  className="btn small"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    enter(entry.name);
-                  }}
-                >
-                  Open
-                </button>
-              ) : (
-                <span className="hint">{formatSize(entry.size)}</span>
-              )}
-            </div>
-          ))}
-        {topLevelEmpty && (
-          <div className="empty">
-            {rootIsRestartable ? (
-              <div className="empty-rescan">
-                <div>No card mounted. Plug the card into the NAS — if it still doesn't show:</div>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={restarting || !!ejecting}
-                  onClick={restart}
-                >
-                  {restarting ? "Restarting… (waiting for the server)" : "⟳ Rescan cards"}
-                </button>
-              </div>
-            ) : (
-              "Nothing here."
+          {ejectMsg && (
+            <Alert severity={ejectMsg.ok ? "success" : "error"}>{ejectMsg.text}</Alert>
+          )}
+          {restartMsg && (
+            <Alert severity={restartMsg.ok ? "success" : "error"}>{restartMsg.text}</Alert>
+          )}
+
+          {roots.length === 0 && (
+            <Alert severity="info">
+              No browse locations are configured on the coordinator, so there's
+              nothing to list here. Paste or type the folder path into the field
+              instead — or add <code>browse_roots</code> to the coordinator config
+              (and set the admin token via ⚙ in the header if it requires one) to
+              turn Browse on.
+            </Alert>
+          )}
+
+          {roots.length > 0 && (
+          <Box
+            sx={{
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              maxHeight: "46vh",
+              overflowY: "auto",
+            }}
+          >
+            {!rootLabel && <div className="empty" style={{ padding: 10 }}>Pick a location above.</div>}
+            {error && <Alert severity="error">{error.message}</Alert>}
+            {rootLabel && !listing && !error && (
+              <Box sx={{ px: 1.5, py: 1 }}>
+                <Skeleton height={28} />
+                <Skeleton height={28} width="80%" />
+                <Skeleton height={28} width="60%" />
+              </Box>
             )}
-          </div>
-        )}
-        {listing?.truncated && (
-          <div className="banner error">Folder too large — showing the first entries only.</div>
-        )}
-      </div>
-
-      <footer className="actions">
+            <List dense disablePadding>
+              {listing && listing.parent !== null && (
+                <ListItemButton divider onClick={() => setPath(listing.parent)}>
+                  <ListItemIcon sx={{ minWidth: 34 }}>
+                    <ArrowUpwardIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText primary=".." />
+                </ListItemButton>
+              )}
+              {listing &&
+                visible.map((entry) => (
+                  <ListItemButton
+                    key={entry.name}
+                    divider
+                    selected={selected.has(entry.name)}
+                    onClick={() =>
+                      selectable(entry) ? toggle(entry.name) : entry.dir && enter(entry.name)
+                    }
+                  >
+                    {selectable(entry) && (
+                      <Checkbox
+                        edge="start"
+                        size="small"
+                        checked={selected.has(entry.name)}
+                        tabIndex={-1}
+                        sx={{ py: 0, mr: 0.5 }}
+                        onChange={() => toggle(entry.name)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
+                    <ListItemIcon sx={{ minWidth: 34 }}>
+                      {entry.dir ? (
+                        <FolderIcon fontSize="small" color="primary" />
+                      ) : (
+                        <InsertDriveFileIcon fontSize="small" sx={{ color: "text.disabled" }} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={entry.name}
+                      slotProps={{ primary: { noWrap: true } }}
+                    />
+                    {rootIsEjectable && path === "" && entry.dir && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<EjectIcon />}
+                        loading={ejecting === entry.name}
+                        loadingPosition="start"
+                        disabled={!!ejecting && ejecting !== entry.name}
+                        title="Safely unmount this card on the NAS"
+                        sx={{ ml: 1, flexShrink: 0 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          ejectDevice(entry.name);
+                        }}
+                      >
+                        {ejecting === entry.name ? "Ejecting…" : "Eject"}
+                      </Button>
+                    )}
+                    {entry.dir ? (
+                      <Button
+                        size="small"
+                        sx={{ ml: 1, flexShrink: 0 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          enter(entry.name);
+                        }}
+                      >
+                        Open
+                      </Button>
+                    ) : (
+                      <Typography variant="caption" sx={{ color: "text.disabled", ml: 1, flexShrink: 0 }}>
+                        {formatSize(entry.size)}
+                      </Typography>
+                    )}
+                  </ListItemButton>
+                ))}
+            </List>
+            {topLevelEmpty && (
+              <Box sx={{ p: 2, textAlign: "center" }}>
+                {rootIsRestartable ? (
+                  <Stack spacing={1.5} sx={{ alignItems: "center" }}>
+                    <div className="empty">
+                      No card mounted. Plug the card into the NAS — if it still doesn't show:
+                    </div>
+                    {rescanButton}
+                  </Stack>
+                ) : (
+                  <div className="empty">Nothing here.</div>
+                )}
+              </Box>
+            )}
+          </Box>
+          )}
+          {listing?.truncated && (
+            <Alert severity="warning">Folder too large — showing the first entries only.</Alert>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
         {mode === "folder" && listing && (
-          <button type="button" className="btn" onClick={chooseCurrent}>
+          <Button variant="outlined" sx={{ mr: "auto" }} onClick={chooseCurrent}>
             Use this folder
-          </button>
+          </Button>
         )}
-        <span style={{ flex: 1 }} />
-        <button type="button" className="btn" onClick={onClose}>
-          Cancel
-        </button>
-        <button
-          type="button"
-          className="btn primary"
-          disabled={selected.size === 0}
-          onClick={confirmSelected}
-        >
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="contained" disabled={selected.size === 0} onClick={confirmSelected}>
           {multi ? `Add selected (${selected.size})` : "Choose"}
-        </button>
-      </footer>
-    </dialog>
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
-// `hero` renders the Sunrise Yellow-on-Navy CTA variant (see .btn.hero) for
-// the one field a form wants the user to start from.
-function BrowseButton({ show, onClick, hero, label }) {
-  if (!show) return null;
+// `hero` renders the Sunrise Yellow-on-Navy CTA variant (theme warning
+// color, matching the topbar strip) for the one field a form wants the
+// user to start from. Always rendered — even when no browse roots are
+// configured — so the primary "pick a folder" action never silently
+// vanishes; the picker itself explains when there's nothing to browse.
+function BrowseButton({ onClick, hero, label }) {
   return (
-    <button
-      type="button"
-      className={`btn browse ${hero ? "hero" : "small"}`}
+    <Button
+      variant={hero ? "contained" : "outlined"}
+      color={hero ? "warning" : "primary"}
+      size={hero ? "medium" : "small"}
+      sx={{ flexShrink: 0, mt: hero ? 0 : 0.25, whiteSpace: "nowrap" }}
       onClick={onClick}
     >
       {label || "Browse…"}
-    </button>
+    </Button>
   );
 }
 
+// Shared visuals for the drop-target state and the "browsers hide paths" note.
+const dragOverSx = (over) =>
+  over
+    ? {
+        "& .MuiOutlinedInput-notchedOutline": {
+          borderStyle: "dashed",
+          borderWidth: 2,
+          borderColor: "primary.main",
+        },
+      }
+    : {};
+
 function DropNote({ note }) {
   if (!note) return null;
-  return <div className="drop-note">{note}</div>;
+  return (
+    <Typography variant="caption" sx={{ color: "error.main" }}>
+      {note}
+    </Typography>
+  );
 }
 
 // Single-path input (root_path, gcp_path).
@@ -381,21 +466,21 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
   const { over, props } = useDropProps((text) => onChange(text.split(/\r?\n/)[0] || ""), setNote);
 
   return (
-    <div className="field">
-      <label>
-        {label} {hint && <span className="hint">{hint}</span>}
-      </label>
-      <div className={`path-input ${over ? "drag-over" : ""}`} {...props}>
-        <input
-          type="text"
+    <Box {...props}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+        <TextField
+          fullWidth
+          size="small"
+          label={label}
+          helperText={note ? <DropNote note={note} /> : hint}
           required={required}
           value={value}
+          sx={dragOverSx(over)}
           onChange={(e) => onChange(e.target.value)}
           onBlur={() => onChange(normalizePath(value))}
         />
-        <BrowseButton show={roots.length > 0} onClick={() => setOpen(true)} />
-      </div>
-      <DropNote note={note} />
+        <BrowseButton onClick={() => setOpen(true)} />
+      </Stack>
       {open && (
         <FilePicker
           roots={roots}
@@ -407,52 +492,45 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
           onClose={() => setOpen(false)}
         />
       )}
-    </div>
+    </Box>
   );
 }
 
-// Multi-path textarea, one path per line (source folders, base data files).
-// Grows with its content so every added path stays visible without scrolling.
-export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel }) {
+// Multi-path field, one path per line (source folders, base data files).
+// TextField multiline grows with its content natively, so every added path
+// stays visible without scrolling.
+export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel, readOnly }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
-  const taRef = useRef(null);
   const append = (text) => {
     const existing = value.trim();
     onChange(existing ? `${existing}\n${text}` : text);
   };
   const { over, props } = useDropProps(append, setNote);
 
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + 2}px`;
-  }, [value]);
-
   return (
-    <div className="field">
-      <label>
-        {label} {hint && <span className="hint">{hint}</span>}
-      </label>
-      <div className={`path-input ${over ? "drag-over" : ""}`} {...props}>
-        <textarea
-          ref={taRef}
-          className="autogrow"
-          rows={2}
+    <Box {...props}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+        <TextField
+          fullWidth
+          size="small"
+          multiline
+          minRows={1}
+          label={label}
+          helperText={note ? <DropNote note={note} /> : hint}
           required={required}
           value={value}
+          sx={dragOverSx(over)}
+          slotProps={readOnly ? { input: { readOnly: true } } : undefined}
           onChange={(e) => onChange(e.target.value)}
-          onBlur={() => onChange(normalizeLines(value))}
+          onBlur={() => (readOnly ? undefined : onChange(normalizeLines(value)))}
         />
         <BrowseButton
-          show={roots.length > 0}
           onClick={() => setOpen(true)}
           hero={browseHero}
           label={browseLabel}
         />
-      </div>
-      <DropNote note={note} />
+      </Stack>
       {open && (
         <FilePicker
           roots={roots}
@@ -465,6 +543,6 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           onClose={() => setOpen(false)}
         />
       )}
-    </div>
+    </Box>
   );
 }
