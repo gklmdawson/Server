@@ -17,6 +17,8 @@ from pywinauto.keyboard import send_keys
 from pywinauto import timings as _t
 from pywinauto import mouse
 
+import license_probe
+
 _t.Timings.window_find_retry       = 0.5
 _t.Timings.after_click_wait        = 0.0
 _t.Timings.after_clickinput_wait   = 0.0
@@ -373,51 +375,80 @@ class Pix4DAutomation:
         return False
 
     def get_license(self):
-        """Get the license information for PIX4Dmatic."""
+        """Open the Organizations & licenses dialog and make sure a PIX4Dmatic
+        license with a seat is active.
+
+        Row order in the dialog varies between runs, so the old fixed-offset
+        clicks (dy=200/dy=300 from the title) picked whatever license happened
+        to sit at that offset. license_probe reads the actual rows instead —
+        UIA licenseItem rects for geometry, OCR per row for product/seats —
+        and clicks the right one, confirming via the Apply button that
+        materializes when a different license is chosen. Outcomes:
+
+          SELECTED — a PIX4Dmatic license is active (already was, or clicked +
+              applied); the dialog is closed via its X (Cancel could revert).
+          NO_SEATS — no active PIX4Dmatic license and every one shows 0
+              seats: run the device-manager Reclaim flow (same clicks as the
+              old code) to free this machine's stale seat.
+          SCAN_FAILED / CLICK_UNCONFIRMED — raise, so the run fails loudly
+              with the row readout in the log instead of activating a random
+              license the way a blind click would.
+        """
+        license_probe.set_emitter(_logger.info)
+
         self.win.child_window(title="S", control_type="CheckBox").click_input()
         self.win.child_window(title="Organizations  licenses", control_type="MenuItem").click_input()
         time.sleep(5)
-        self._click_offset_from_anchor("Organizations and licenses", "Text", dx=0, dy=200)
-        time.sleep(.5)
-        license_check_btn = self.win.child_window(title="Go to device manager", control_type="Button")
-        apply_btn = self.win.child_window(title="Apply", control_type="Button")
-        reclaim_btn = self.win.child_window(title="Reclaim", control_type="Button")
-        time.sleep(.5)
-        if license_check_btn.exists():
-            time.sleep(.5)
-            self._click_offset_from_anchor("Organizations and licenses", "Text", dx=0, dy=300)
-            _logger.info("License check button detected, no license found.")
-            if apply_btn.exists():
-                time.sleep(.5)
-                apply_btn.click_input()
-            else:
-                time.sleep(1)
-                license_check_btn.click_input()
-                time.sleep(2.5)
-                self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=150)
-                if reclaim_btn.exists():
-                    time.sleep(.5)
-                    reclaim_btn.click_input()
-                else:
-                    self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=185)
 
+        status = license_probe.select_available_license(self.win)
+        _logger.info(f"License selection: {status}")
+
+        if status == "SELECTED":
+            if not license_probe.close_license_dialog(self.win):
+                _logger.warning("License dialog did not close after selection.")
+            return status
+
+        if status == "NO_SEATS":
+            self._reclaim_seat()
+            return status
+
+        raise RuntimeError(
+            f"License selection failed ({status}) — see the row readout above; "
+            "run automation\\license_probe.py with the dialog open to diagnose.")
+
+    def _reclaim_seat(self):
+        """No PIX4Dmatic seats available anywhere: open the device manager and
+        reclaim this machine's seat (same click sequence the old flow used —
+        the Reclaim button when it's in the UIA tree, offset clicks from the
+        'Device manager' title otherwise)."""
+        device_btn = self.win.child_window(title="Go to device manager", control_type="Button")
+        device_btn.wait("visible", timeout=10)
+        device_btn.click_input()
+        time.sleep(2.5)
+        self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=150)
+        reclaim_btn = self.win.child_window(title="Reclaim", control_type="Button")
+        if reclaim_btn.exists():
+            time.sleep(.5)
+            reclaim_btn.click_input()
+        else:
+            self._click_offset_from_anchor("Device manager", "Text", dx=0, dy=185)
 
     def check_license(self):
-        """Check the license status of PIX4Dmatic."""
+        """Step 1 — ensure a usable PIX4Dmatic license is active. Only opens
+        the Organizations dialog when the app shows a license nag (the 'Go to
+        Organizations  Licenses' popup or the 'Start trial' screen)."""
         _logger.info("Checking license status...")
         popup = self.win.child_window(title="Go to Organizations  Licenses", control_type="Button")
+        trial_btn = self.win.child_window(title="Start trial", control_type="Button")
 
         if popup.exists():
             send_keys("{ESC}")
             self.get_license()
+        elif trial_btn.exists():
+            _logger.warning("Found 'Start trial' button, proceeding with license activation.")
+            self.get_license()
         else:
-            trial_btn = self.win.child_window(title="Start trial", control_type="Button")
-            if trial_btn.exists():
-                _logger.warning("Found 'Start trial' button, proceeding with license activation.")
-                self.get_license()
-        _logger.warning("Could not find 'Start trial' button, license is present.")
-        
-        pass
+            _logger.info("No license nag detected — license is present.")
 
     
     def click_select_folder(self, max_attempts: int = 5):
