@@ -17,7 +17,11 @@ What probing on the rig established (2026-07-23):
   after Apply.
 * An active license holds its own seat, so the row that is currently active
   can read '0/1 seat(s) available' — a selected row's seat count must NOT
-  disqualify it.
+  disqualify it. After this device takes a seat, that row also LOSES its
+  warning triangle: '0/N seats' with NO triangle is the signature of a seat
+  held by this device. And a freshly REOPENED dialog does not blue-fill the
+  active row, so the right-edge check disc is detected separately (CHECK
+  flag) as the persistent active marker.
 * 0-seat rows carry an orange warning triangle. ClearType subpixel fringing
   on the gray subtitle text also produces scattered orange-ish pixels, so
   triangle detection uses local density (a solid 16x16 block), not a global
@@ -113,9 +117,10 @@ SEATS_RE   = re.compile(r"(\d+)\s*/\s*(\d+)")
 ROW_AUTO_ID = "licenseItem"
 
 # Peak 16x16 orange density that counts as a real warning triangle. Measured
-# expectation: solid icon core ~150-220, ClearType fringe clusters < ~40.
+# on the rig (2026-07-23): a real icon scores 96, ClearType fringe clusters
+# on subtitle text score <= 11, title-only rows ~6. 40 splits with margin.
 # The per-row warn= score is printed so this can be re-tuned from a real run.
-WARN_SCORE_MIN = 100
+WARN_SCORE_MIN = 40
 
 # Library output goes through _emit so AutomatePix4D can route it into its
 # logger (payload --log-file captures logging, not print).
@@ -439,9 +444,16 @@ class LicenseRow:
         self.product = None       # 'PIX4Dmatic' / 'PIX4Dsurvey' / 'Discovery' / None
         self.avail = None         # seats available, None = unreadable
         self.total = None
-        self.selected = False     # selection-blue fill = this is the ACTIVE license
+        self.selected = False     # full-row selection-blue fill (in-dialog highlight)
+        self.checkmark = False    # blue check disc at the row's right edge
         self.warning = False      # solid orange warning triangle detected
         self.warn_score = 0       # raw density score behind `warning`, for tuning
+
+    @property
+    def active(self):
+        """This row is the active license: the full blue fill (freshly
+        clicked) or the right-edge check disc (persists across reopen)."""
+        return self.selected or self.checkmark
 
     @property
     def click_point(self):
@@ -453,9 +465,10 @@ class LicenseRow:
             seats = "?/?"
         else:
             seats = f"{self.avail}/{self.total if self.total is not None else '?'}"
-        flags = ",".join(f for f, on in (("ACTIVE", self.selected), ("WARN", self.warning)) if on)
+        flags = ",".join(f for f, on in (("FILL", self.selected), ("CHECK", self.checkmark),
+                                         ("WARN", self.warning)) if on)
         return (f"row{self.index}  {str(self.product):12s} seats={seats:4s} "
-                f"[{flags:11s}] warn={self.warn_score:3d} rect={self.rect}  ocr={self.text!r}")
+                f"[{flags:15s}] warn={self.warn_score:3d} rect={self.rect}  ocr={self.text!r}")
 
 
 def read_license_rows(win):
@@ -484,6 +497,14 @@ def read_license_rows(win):
         subtitle = row_img.crop((10, h // 2, min(360, row_img.width), max(h // 2 + 1, h - 4)))
         row.warn_score = _warning_score(subtitle)
         row.warning = row.warn_score >= WARN_SCORE_MIN
+        # The check disc marking the active license sits in the right-edge
+        # strip (the same region excluded from OCR); a ~30px blue disc fills
+        # well over 8% of the strip. Also true whenever the whole row is
+        # blue-filled, which is fine — active either way.
+        strip_left = max(0, row_img.width - 70)
+        right_strip = row_img.crop((strip_left, 8,
+                                    max(strip_left + 1, row_img.width - 8), max(9, h - 8)))
+        row.checkmark = _ratio(right_strip, _is_blue, step=2) > 0.08
 
         # Exclude the right edge (active-row checkmark) from the OCR crop.
         ocr_crop = row_img.crop((8, 2, max(9, row_img.width - 80), h - 2))
@@ -540,7 +561,7 @@ def select_available_license(win, product="PIX4Dmatic", apply=True):
               "check the ocr= text above.")
         return "SCAN_FAILED"
 
-    active = [r for r in matic if r.selected]
+    active = [r for r in matic if r.active]
     if active:
         _emit(f"RESULT: SELECTED — row{active[0].index} is already the active {product} "
               "license (an active license holds its own seat, so 0/1 there is fine).")
@@ -550,6 +571,12 @@ def select_available_license(win, product="PIX4Dmatic", apply=True):
     if not candidates:
         unknown = [r.index for r in matic if r.avail is None]
         note = f" (row(s) {unknown} had unreadable seat counts)" if unknown else ""
+        owned = [r.index for r in matic if r.avail == 0 and not r.warning]
+        if owned:
+            note += (f"; NOTE row(s) {owned} show 0 seats WITHOUT the warning "
+                     "triangle — that pattern matches a seat held by THIS device "
+                     "(fine if the app works; a stale hold needing Reclaim if "
+                     "the app is nagging for a license)")
         _emit(f"RESULT: NO_SEATS — no active {product} license and every one "
               f"shows 0 seats available{note}.")
         return "NO_SEATS"
