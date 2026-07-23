@@ -448,8 +448,9 @@ export default function Submit({ onSubmitted }) {
           <legend>1 · Flight data — start here</legend>
           <PathLines
             label="Source folder(s) — one per line"
-            hint="the flight data on the share/card; picking one auto-fills sensor, date & EPSG below"
+            hint="use Pick flight folder(s) or drop a path here — picking one auto-fills sensor, date & EPSG below"
             required
+            readOnly
             value={form.sources}
             onChange={(v) => setForm((f) => ({ ...f, sources: v }))}
             roots={browseRoots}
@@ -516,7 +517,7 @@ export default function Submit({ onSubmitted }) {
                   value={form.sensor_type}
                   onChange={setSensor}
                   disabled={!!locked.sensor_type}
-                  slotProps={{ select: { native: true } }}
+                  slotProps={{ select: { native: true }, inputLabel: { shrink: true } }}
                 >
                   <option value="">— select sensor —</option>
                   {(options.sensors.length

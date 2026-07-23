@@ -499,7 +499,7 @@ export function PathInput({ label, hint, value, onChange, required, roots, mode,
 // Multi-path field, one path per line (source folders, base data files).
 // TextField multiline grows with its content natively, so every added path
 // stays visible without scrolling.
-export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel }) {
+export function PathLines({ label, hint, value, onChange, required, roots, mode, exts, pickerTitle, onPickMeta, browseHero, browseLabel, readOnly }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(null);
   const append = (text) => {
@@ -521,8 +521,9 @@ export function PathLines({ label, hint, value, onChange, required, roots, mode,
           required={required}
           value={value}
           sx={dragOverSx(over)}
+          slotProps={readOnly ? { input: { readOnly: true } } : undefined}
           onChange={(e) => onChange(e.target.value)}
-          onBlur={() => onChange(normalizeLines(value))}
+          onBlur={() => (readOnly ? undefined : onChange(normalizeLines(value)))}
         />
         <BrowseButton
           onClick={() => setOpen(true)}
