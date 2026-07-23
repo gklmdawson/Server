@@ -33,6 +33,8 @@ agent = [
 automation = [
     "pywinauto>=0.6.8",
     "piexif>=1.1.3",
+    "Pillow>=10",     # license_probe: row screenshots + pixel signals
+    "winocr ; platform_system == 'Windows'",  # license_probe: reads license rows via Windows' built-in OCR
 ]
 # The data intake GUI.
 gui = [
