@@ -1,29 +1,40 @@
-// A sunset that sets as the flight entry is completed. The sun's height and the
-// sky's warmth are driven purely by how many required fields are filled
-// (0 -> dusk, all -> sun on the horizon), so each field the operator completes
-// animates the sun a step lower via CSS transitions. The scene is drawn from
-// the Sunrise brand tokens (Navy -> Cedar -> Yellow) — no image asset, so it
-// stays self-contained and themes/animates cheaply. Swap the `.warm` gradient
-// for a background-image if a real photo is ever preferred.
+// A day's sun arc that tracks how complete the flight entry is: the sun rises
+// at the bottom-left when nothing is filled, arcs up to the top around the
+// halfway mark, and sets at the bottom-right when every required field is in.
+// Two values drive it: --p (0..1, fraction filled) moves the sun horizontally
+// and the progress bar; --arc (its parabolic height, peaking at the midpoint)
+// moves it vertically and fades the bright daytime sky in over the warm
+// dawn/dusk base. Colors are the Sunrise brand tokens (Navy/Cerulean for day,
+// Cedar/Yellow for the horizons) — no image asset, so it themes and animates
+// cheaply; swap the `.day`/base gradients for a photo layer if ever preferred.
 
 export function SunsetProgress({ filled, total }) {
   const p = total ? Math.max(0, Math.min(1, filled / total)) : 0;
+  const arc = 4 * p * (1 - p); // 0 at the horizons, 1 at the top of the sky
   const done = filled >= total && total > 0;
   const remaining = Math.max(0, total - filled);
-  const label = done
-    ? `All ${total} required details in — ready to queue.`
-    : `${filled} of ${total} required details in, ${remaining} to go.`;
+
+  let lead = "Getting your flight ready";
+  if (filled === 0) lead = "Sunrise — start with your flight folder";
+  else if (done) lead = "The sun's set — ready to queue";
+
+  const sub = done
+    ? `all ${total} required details in`
+    : `${filled} of ${total} required details in, ${remaining} to go`;
 
   return (
-    <div className="sunset" style={{ "--p": p }} role="img" aria-label={label}>
-      <div className="warm" />
+    <div
+      className="sunset"
+      style={{ "--p": p, "--arc": arc }}
+      role="img"
+      aria-label={`${filled} of ${total} required fields complete`}
+    >
+      <div className="day" />
       <div className="sun" />
       <div className="ground" />
       <div className="caption">
-        <span className="lead">
-          {done ? "The sun's down — ready to queue" : "Getting your flight ready"}
-        </span>
-        <span className="sub">{label}</span>
+        <span className="lead">{lead}</span>
+        <span className="sub">{sub}</span>
       </div>
       <div className="track">
         <span />

@@ -922,42 +922,45 @@ dialog.picker footer {
   }
 }
 
-/* ---- sunset progress (Submit form) ----
-   The sun's position and the sky's warmth are driven by --p (0..1 = fraction
-   of required fields filled), so completing a field animates the sun a step
-   lower. Colors are the Sunrise dusk: Navy -> Cedar -> Yellow. */
+/* ---- sun-arc progress (Submit form) ----
+   Two custom properties drive the scene: --p (0..1 = fraction of required
+   fields filled) moves the sun left->right and the progress bar; --arc (its
+   parabolic height, 0 at the horizons and 1 at the midpoint) moves the sun up
+   and fades the daytime sky in. Result: the sun rises bottom-left, arcs over
+   the top, and sets bottom-right as the form is completed. Colors are Sunrise
+   brand tokens — Cerulean day, Cedar/Yellow dawn & dusk. */
 
 .sunset {
   position: relative;
-  height: 148px;
+  height: 160px;
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--border);
   isolation: isolate;
   user-select: none;
-  /* cool dusk base; the warm layer fades in over it as fields fill */
-  background: linear-gradient(180deg, #0b1a24 0%, #16303f 60%, #24505c 100%);
+  /* warm dawn/dusk base — always showing at the horizons (low sun) */
+  background: linear-gradient(180deg, #163a52 0%, #6b3f57 40%, #ca563c 72%, #ffd457 100%);
 }
 
-.sunset .warm {
+.sunset .day {
   position: absolute;
   inset: 0;
-  opacity: var(--p, 0);
+  opacity: var(--arc, 0); /* bright daytime sky fades in as the sun climbs */
   transition: opacity 0.9s ease;
-  background: linear-gradient(180deg, #113e59 0%, #6b3f57 38%, #ca563c 66%, #ffd457 100%);
+  background: linear-gradient(180deg, #0b3550 0%, #0077a8 55%, #86cceb 100%);
 }
 
 .sunset .sun {
   position: absolute;
-  width: 56px;
-  height: 56px;
-  margin: -28px 0 0 -28px;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
   border-radius: 50%;
-  /* arc down and across as --p climbs 0 -> 1 */
-  left: calc(12% + 68% * var(--p, 0));
-  top: calc(10% + 56% * var(--p, 0));
+  /* horizontal with --p (8% -> 92%); vertical arcs up with --arc (76% -> 8%) */
+  left: calc(8% + 84% * var(--p, 0));
+  top: calc(76% - 68% * var(--arc, 0));
   background: radial-gradient(circle at 50% 42%, #fff6d0 0%, #ffdf7a 55%, #f2a63b 100%);
-  box-shadow: 0 0 calc(12px + 46px * var(--p, 0)) rgba(255, 205, 90, 0.75);
+  box-shadow: 0 0 calc(12px + 40px * var(--arc, 0)) rgba(255, 213, 110, 0.8);
   transition: top 0.9s cubic-bezier(0.22, 0.61, 0.36, 1),
     left 0.9s cubic-bezier(0.22, 0.61, 0.36, 1), box-shadow 0.9s ease;
   z-index: 1;
@@ -1033,7 +1036,7 @@ dialog.picker footer {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sunset .warm,
+  .sunset .day,
   .sunset .sun,
   .sunset .track > span {
     transition: none;

@@ -346,20 +346,30 @@ export default function Submit({ onSubmitted }) {
   const models = options.defaults?.classify_models || [];
   const showEcefInput = ecefManual || form.ecef.trim() !== "" || locked.ecef;
 
-  // Required fields drive both the sunset (how far the sun has set) and whether
-  // the Queue button is shown at all.
-  const requiredChecks = [
-    form.sources.trim(),
-    form.client.trim(),
-    form.project.trim(),
-    form.date.trim(),
-    form.sensor_type,
-    form.root_path.trim(),
+  // Required fields drive both the sunset (how far the sun has risen/set) and
+  // whether the Queue button is shown. Each entry is one step of the sun's arc.
+  // Targets counts as satisfied when the "No targets" box is ticked, matching
+  // the flights that legitimately have none.
+  const requiredFields = [
+    { label: "Flight data", ok: form.sources.trim() !== "" },
+    { label: "Client", ok: form.client.trim() !== "" },
+    { label: "Project", ok: form.project.trim() !== "" },
+    { label: "Flight date", ok: form.date.trim() !== "" },
+    { label: "Sensor", ok: form.sensor_type !== "" },
+    { label: "Projects root", ok: form.root_path.trim() !== "" },
+    { label: "Base station", ok: storedBase.length > 0 },
+    { label: "Targets", ok: gcpUpload.some((u) => u.stored_path) || form.no_targets },
+    { label: "EPSG horizontal", ok: form.epsg_h.trim() !== "" },
+    { label: "EPSG vertical", ok: form.epsg_v.trim() !== "" },
   ];
-  const requiredTotal = requiredChecks.length;
-  const filledCount = requiredChecks.filter(Boolean).length;
+  const requiredTotal = requiredFields.length;
+  const filledCount = requiredFields.filter((f) => f.ok).length;
   const allRequired = filledCount === requiredTotal;
-  const remaining = requiredTotal - filledCount;
+  const missingLabels = requiredFields.filter((f) => !f.ok).map((f) => f.label);
+  const missingHint =
+    missingLabels.length <= 3
+      ? missingLabels.join(", ")
+      : `${missingLabels.slice(0, 3).join(", ")} +${missingLabels.length - 3} more`;
 
   const probeAlert = () => {
     if (probing) {
@@ -814,10 +824,7 @@ export default function Submit({ onSubmitted }) {
               Queue it
             </Button>
           ) : (
-            <Chip
-              variant="outlined"
-              label={`Fill ${remaining} more required field${remaining === 1 ? "" : "s"} to queue`}
-            />
+            <Chip variant="outlined" label={`Still needed to queue: ${missingHint}`} />
           )}
         </div>
       </form>
